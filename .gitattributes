@@ -1,0 +1,6 @@
+# Normalize line endings to LF on checkout. Windows otherwise checks out CRLF,
+# which breaks heredoc-based spec fixtures (spec/table/*). Binaries are exempt.
+* text=auto eol=lf
+*.png binary
+*.ico binary
+*.ttf binary
