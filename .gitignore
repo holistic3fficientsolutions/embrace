@@ -1,0 +1,32 @@
+# from https://newbedev.com/how-do-i-add-files-without-dots-in-them-all-extension-less-files-to-the-gitignore-file
+# to ignore all files without extensions (binary files)
+*
+!/**/
+!*.*
+
+/screenshots/
+/docs/
+/lib/
+/bin/
+/.shards/
+/shard.override.yml
+*.dwarf
+imgui.ini
+/coverage/
+/doc/obsidian/embrace/.obsidian/
+generated-error*
+.~*
+dump_*.txt
+*.embrace
+*.exe
+gc.dll
+iconv-2.dll
+embrace.license
+pki-root-ca.json
+/node_modules/
+/package.json
+/package-lock.json
+/.claude/
+
+# pre-push-Hook (extensionslos, sonst von "*" oben ignoriert)
+!/scripts/githooks/pre-push

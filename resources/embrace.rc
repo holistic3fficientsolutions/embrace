@@ -1,0 +1,6 @@
+// Windows resource script — embeds the application icon into embrace.exe.
+// Compiled with rc.exe (part of the MSVC toolchain) into embrace.res and linked
+// into the executable; see tools/win-build.bat. The lowest icon ID becomes the
+// icon Windows Explorer / the taskbar shows for the .exe file itself.
+// (The runtime window icon is set separately from embrace-logo.png at startup.)
+1 ICON "embrace-logo.ico"

@@ -1,0 +1,29 @@
+name: embrace-crystal
+version: 2.0.0
+
+authors:
+  - Wolfgang Mayerle <wolfgang.mayerle@h3o.de>
+
+# use `shards build` or `shards build --release` to generate into bin/
+targets:
+  embrace:
+    main: src/gui/embrace_main.cr
+
+crystal: ">= 1.20.0"
+
+license: AGPL-3.0-only
+
+dependencies:
+  crymble-ui:
+    github: wolfgang371/crymbleui
+    version: ~> 0.6.0
+  crexcel:
+    github: wolfgang371/crexcel
+  xlsx-parser:
+    github: d1ceward/xlsx-parser
+  debug:
+    github: Sija/debug.cr
+
+# development_dependencies:
+#   crystal-kcov:
+#     github: vici37/crystal-kcov

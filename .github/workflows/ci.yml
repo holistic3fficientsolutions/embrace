@@ -1,0 +1,59 @@
+name: CI
+
+# Build + test on Linux. crymble-ui vendors SFML 3 / CSFML 3 (Linux shared libs
+# under lib/crymble-ui/locallib/{sfml3,csfml3}/lib/linux/), so we do NOT build
+# SFML here — `shards install` pulls crymble-ui with the libs and setup.sh wires
+# the loader paths. We only need SFML's transitive runtime libraries.
+#
+# Windows is intentionally NOT built in CI; the Windows release binary (with the
+# embedded .exe icon) is produced via tools/win-build.bat and attached to a
+# GitHub Release. See the README.
+#
+# NOTE: this workflow is a best-effort starting point and is UNTESTED — it can
+# only be validated on real GitHub runners. Expect a first-push debug pass (the
+# apt package list / versions differ across Ubuntu releases; ubuntu-24.04 assumed).
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: crystal-lang/install-crystal@v1
+        with:
+          crystal: "1.20.0"
+
+      - name: Install SFML 3 transitive runtime libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgl1 libopenal1 libfreetype6 \
+            libx11-6 libxrandr2 libxcursor1 libxi6 libudev1 \
+            libvorbisfile3 libflac12 \
+            xvfb
+
+      - name: shards install
+        run: shards install
+
+      - name: Build
+        run: |
+          source setup.sh
+          shards build embrace
+
+      # The suite must run in two groups (a single `crystal spec` invocation
+      # crashes because the GUI specs run their own fibers/event loop).
+      # xvfb provides a virtual display for the GUI specs.
+      - name: Specs (core / data layer)
+        run: |
+          source setup.sh
+          xvfb-run -a crystal spec spec/*.cr
+
+      - name: Specs (GUI)
+        run: |
+          source setup.sh
+          xvfb-run -a crystal spec spec/gui/*.cr
