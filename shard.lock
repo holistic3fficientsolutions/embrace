@@ -6,7 +6,7 @@ shards:
 
   crymble-ui:
     git: https://github.com/wolfgang371/crymbleui.git
-    version: 0.6.0
+    version: 0.6.1
 
   debug:
     git: https://github.com/sija/debug.cr.git
