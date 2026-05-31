@@ -1,5 +1,7 @@
 # Embrace
 
+[![CI](https://github.com/holistic3fficientsolutions/embrace/actions/workflows/ci.yml/badge.svg)](https://github.com/holistic3fficientsolutions/embrace/actions/workflows/ci.yml)
+
 **A sovereign, local-first tool for structured data — lighter than a
 spreadsheet, more powerful than a database, with built-in time travel.**
 
