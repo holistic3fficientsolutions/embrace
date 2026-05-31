@@ -28,11 +28,11 @@ jobs:
         with:
           crystal: "1.20.0"
 
-      - name: Install SFML 3 transitive runtime libraries
+      - name: Install SFML 3 build + runtime libraries
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libgl1 libopenal1 libfreetype6 \
+            libgl1-mesa-dev libopenal1 libfreetype6 \
             libx11-6 libxrandr2 libxcursor1 libxi6 libudev1 \
             libvorbisfile3 libflac12 \
             xvfb
@@ -43,6 +43,9 @@ jobs:
       - name: Build
         run: |
           source setup.sh
+          echo "LIBRARY_PATH=$LIBRARY_PATH"
+          ls -la lib/crymble-ui/locallib/sfml3/lib/linux/  || echo "!! sfml3 locallib missing"
+          ls -la lib/crymble-ui/locallib/csfml3/lib/linux/ || echo "!! csfml3 locallib missing"
           shards build embrace
 
       # The suite must run in two groups (a single `crystal spec` invocation
