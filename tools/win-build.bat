@@ -23,16 +23,19 @@ REM 1) Wire the vendored SFML 3 / CSFML 3 linker paths (LIB / INCLUDE) via the
 REM    canonical env shim (delegates to crymble-ui's setup.bat).
 call setup.bat || (echo env setup failed & exit /b 1)
 
-REM 2) Compile the icon resource (rc.exe is part of the MSVC toolchain).
-rc.exe /nologo /fo resources\embrace.res resources\embrace.rc || (echo rc.exe failed & exit /b 1)
+REM 2) Compile the icon resource to an ABSOLUTE path. crystal invokes the MSVC
+REM    linker from a temporary build directory, so a relative .res path would be
+REM    resolved there (not the repo root) and fail with LNK1181.
+set "RES=%CD%\resources\embrace.res"
+rc.exe /nologo /fo "%RES%" resources\embrace.rc || (echo rc.exe failed & exit /b 1)
 
 REM 3) Ensure the output directory exists — `crystal build -o bin\...` does NOT
 REM    create it (a fresh checkout has no bin\), else LINK fails with LNK1104.
 if not exist bin mkdir bin
 
-REM 4) Build, linking the icon resource into the executable.
+REM 4) Build, linking the icon resource (absolute path) into the executable.
 crystal build src\gui\embrace_main.cr -o bin\embrace.exe --release --no-debug ^
-    --link-flags resources\embrace.res || (echo build failed & exit /b 1)
+    --link-flags "%RES%" || (echo build failed & exit /b 1)
 
 echo.
 echo OK: bin\embrace.exe built (with embedded icon).
