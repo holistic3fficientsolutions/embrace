@@ -1,6 +1,12 @@
-# Normalize line endings to LF on checkout. Windows otherwise checks out CRLF,
-# which breaks heredoc-based spec fixtures (spec/table/*). Binaries are exempt.
+# Line endings for cross-platform (esp. Windows) checkouts.
+# Text/source defaults to LF — Windows otherwise checks out CRLF, which adds \r to
+# the heredoc-based spec fixtures (spec/table/*) and fails the suite.
 * text=auto eol=lf
+# Batch files MUST stay CRLF — cmd.exe mis-parses LF-only .bat/.cmd (breaks
+# setup.bat / tools/win-build.bat: REM lines run as commands, if/else falls through).
+*.bat text eol=crlf
+*.cmd text eol=crlf
+# Binary assets: never normalize.
 *.png binary
 *.ico binary
 *.ttf binary

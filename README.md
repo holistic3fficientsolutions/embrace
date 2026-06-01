@@ -31,9 +31,11 @@ every change is a commit you can branch, diff, and travel back through.
 
 ## Download
 
-Pre-built binaries (Linux AppImage, Windows `.exe`) are attached to each
-[GitHub Releases](https://github.com/holistic3fficientsolutions/embrace/releases) and mirrored at **[h3o.de](https://h3o.de)**.
-(Binaries are not kept in the repository.)
+Pre-built binaries (Linux `.tar.gz`, Windows `.exe`) are attached to each
+[GitHub Release](https://github.com/holistic3fficientsolutions/embrace/releases) and mirrored at **[h3o.de](https://h3o.de)**.
+The Windows `.exe` is self-contained; the Linux archive bundles its SFML/CSFML
+libraries and a launcher (common system libs such as libGL/libopenal must be
+present). (Binaries are not kept in the repository.)
 
 ## Build from Source
 
