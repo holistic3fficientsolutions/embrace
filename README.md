@@ -1,6 +1,9 @@
 # Embrace
 
 [![CI](https://github.com/holistic3fficientsolutions/embrace/actions/workflows/ci.yml/badge.svg)](https://github.com/holistic3fficientsolutions/embrace/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/holistic3fficientsolutions/embrace)](https://github.com/holistic3fficientsolutions/embrace/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/holistic3fficientsolutions/embrace/total)](https://github.com/holistic3fficientsolutions/embrace/releases)
+[![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0--only-blue)](LICENSE)
 
 **A sovereign, local-first tool for structured data — lighter than a
 spreadsheet, more powerful than a database, with built-in time travel.**
