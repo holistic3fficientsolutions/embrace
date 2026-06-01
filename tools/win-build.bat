@@ -13,7 +13,8 @@ REM The two proprietary steps the old internal build had — symbol obfuscation 
 REM checksum patching — are intentionally GONE and must NOT return (incompatible
 REM with the AGPL release).
 REM
-REM NOTE: untested in CI — validate on the first local Windows build and adjust if needed.
+REM NOTE: this is the exact build the Release workflow (.github/workflows/release.yml)
+REM runs on a v* tag to produce the published Windows .exe.
 REM ============================================================================
 setlocal
 cd /d "%~dp0.."
@@ -25,7 +26,11 @@ call setup.bat || (echo env setup failed & exit /b 1)
 REM 2) Compile the icon resource (rc.exe is part of the MSVC toolchain).
 rc.exe /nologo /fo resources\embrace.res resources\embrace.rc || (echo rc.exe failed & exit /b 1)
 
-REM 3) Build, linking the icon resource into the executable.
+REM 3) Ensure the output directory exists — `crystal build -o bin\...` does NOT
+REM    create it (a fresh checkout has no bin\), else LINK fails with LNK1104.
+if not exist bin mkdir bin
+
+REM 4) Build, linking the icon resource into the executable.
 crystal build src\gui\embrace_main.cr -o bin\embrace.exe --release --no-debug ^
     --link-flags resources\embrace.res || (echo build failed & exit /b 1)
 
