@@ -19,6 +19,7 @@ generated-error*
 dump_*.txt
 *.embrace
 *.exe
+*.res
 gc.dll
 iconv-2.dll
 embrace.license

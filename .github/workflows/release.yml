@@ -73,8 +73,11 @@ jobs:
           exec "$HERE/bin/embrace" "$@"
           LAUNCH
           chmod +x "$DIST/embrace" "$DIST/bin/embrace"
-          tar czf "$DIST.tar.gz" "$DIST"
-          echo "ASSET=$DIST.tar.gz" >> "$GITHUB_ENV"
+          # Stable, version-less asset name so the website can link
+          # /releases/latest/download/embrace-linux-x86_64.tar.gz (auto-tracks the
+          # newest 2.0.x). Version stays visible: extracted folder is "$DIST", About shows the build.
+          tar czf "embrace-linux-x86_64.tar.gz" "$DIST"
+          echo "ASSET=embrace-linux-x86_64.tar.gz" >> "$GITHUB_ENV"
 
       - name: Attach to GitHub Release
         uses: softprops/action-gh-release@v2
@@ -109,9 +112,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
-          cp bin/embrace.exe "embrace-${TAG}-windows-x64.exe"
-          echo "ASSET=embrace-${TAG}-windows-x64.exe" >> "$GITHUB_ENV"
+          # Stable, version-less name so the website can link
+          # /releases/latest/download/embrace-windows-x64.exe (auto-tracks newest 2.0.x).
+          cp bin/embrace.exe "embrace-windows-x64.exe"
+          echo "ASSET=embrace-windows-x64.exe" >> "$GITHUB_ENV"
 
       - name: Attach to GitHub Release
         uses: softprops/action-gh-release@v2
