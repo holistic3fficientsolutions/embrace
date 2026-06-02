@@ -3,6 +3,7 @@
 [![CI](https://github.com/holistic3fficientsolutions/embrace/actions/workflows/ci.yml/badge.svg)](https://github.com/holistic3fficientsolutions/embrace/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/holistic3fficientsolutions/embrace)](https://github.com/holistic3fficientsolutions/embrace/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/holistic3fficientsolutions/embrace/total)](https://github.com/holistic3fficientsolutions/embrace/releases)
+[![Crystal](https://img.shields.io/badge/made%20with-Crystal-black?logo=crystal&logoColor=white)](https://crystal-lang.org/)
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0--only-blue)](LICENSE)
 
 **A sovereign, local-first tool for structured data — lighter than a

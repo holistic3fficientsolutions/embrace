@@ -33,8 +33,12 @@ REM 3) Ensure the output directory exists — `crystal build -o bin\...` does NO
 REM    create it (a fresh checkout has no bin\), else LINK fails with LNK1104.
 if not exist bin mkdir bin
 
-REM 4) Build, linking the icon resource (absolute path) into the executable.
-crystal build src\gui\embrace_main.cr -o bin\embrace.exe --release --no-debug ^
+REM 4) Build a STATIC, self-contained .exe (fat binary). --static makes Crystal link
+REM    its C deps (iconv, pcre2, xml2, z, gc) statically too — without it they link
+REM    dynamically and a clean Windows box errors with "iconv-2.dll not found".
+REM    The vendored SFML/CSFML win32 libs are already static, so the result needs no
+REM    runtime DLLs. (Also resolves the LNK4098 LIBCMT/CRT-mix warning.)
+crystal build src\gui\embrace_main.cr -o bin\embrace.exe --release --no-debug --static ^
     --link-flags "%RES%" || (echo build failed & exit /b 1)
 
 echo.
