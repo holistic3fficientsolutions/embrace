@@ -265,6 +265,17 @@ class SimpleMatrixAdapter(T, U, V)
                     cell_assign_reference(row, col, rc.rank)
                 end
             end
+        when Bool
+            # Bool cells are checkboxes (as in the pre-crymbleui ImGui build):
+            # the box visualises the value and Space / double-click toggle it.
+            # The cursor cell's checkbox becomes the matrix proxy, so a Space
+            # keypress is forwarded to Checkbox#trigger_click, which flips the
+            # box and fires this callback. We persist the negation of the value
+            # captured at build time (which equals the current cell value).
+            captured = value
+            CrymbleUI::Checkbox.new("", checked: captured, background_color: diff_bg, id: "bool_#{row}_#{col}") do
+                cell_assign(row, col, captured ? "'false" : "'true")
+            end
         when NilRecordStruct, NilDeadAreaStruct, Nil
             if diff_bg
                 CrymbleUI::TextInput.new(value: "", mode: CrymbleUI::TextInputMode::QuickEntry, background_color: diff_bg)
@@ -276,7 +287,6 @@ class SimpleMatrixAdapter(T, U, V)
             when String  then value
             when Int64   then value.to_s
             when Float64 then value.to_s
-            when Bool    then value.to_s
             else              ""
             end
             if diff_bg && text_color

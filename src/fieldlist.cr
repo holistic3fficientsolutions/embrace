@@ -53,6 +53,7 @@ class Table::Lazy::Fieldlist(T,U) < Table::Lazy::Raw::Base(T)
         LastDerived = InternalColumnIndex
     end
     @version : Int32? = nil
+    @last_parent_version : Int32? = nil
     getter table_memory : Table::Lazy::Raw::Memory(T)
     @table_internal : Table::Lazy::Raw::Base(T) # indexed, needed for assignment to Rank
     @table : Table::Lazy::Raw::Base(T) # for user
@@ -199,6 +200,16 @@ class Table::Lazy::Fieldlist(T,U) < Table::Lazy::Raw::Base(T)
                 @table_internal[[new_row, ColumnIndices::SortAscending.value]] = true
             end
             @version = version
+        end
+        # The Name column is derived from @parent's field names, but the inner
+        # Derived table is keyed to @table_internal only. A rename in @parent
+        # (Names meta-field write) never touches @table_internal, so without this
+        # the names would stay stale until the next fieldlist memory write (a
+        # drag/sort). Rebuilding the view whenever @parent changes resets the
+        # Derived cache so the names re-derive. O(#fields), only on parent change.
+        if !is_multiassign? && (@last_parent_version != @parent.version)
+            @table = create_table
+            @last_parent_version = @parent.version
         end
     end
     private def create_table : Table::Lazy::Raw::Base(T)

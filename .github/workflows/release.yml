@@ -4,17 +4,23 @@ name: Release
 # version tag (v*) is pushed. publish.sh pushes such a tag, so a release is cut
 # automatically; it can also be run manually for an existing tag (workflow_dispatch).
 #
-#   Linux   -> embrace-<tag>-linux-x86_64.tar.gz
-#              (release binary + bundled SFML/CSFML .so + a launcher that sets
-#               LD_LIBRARY_PATH; common system libs like libGL/libopenal must be present)
-#   Windows -> embrace-<tag>-windows-x64.exe
+#   Linux   -> embrace-linux-x86_64.AppImage
+#              (portable AppImage: the binary + its full non-system dependency closure
+#               and a multi-size icon, assembled by tools/build-appimage.sh via
+#               linuxdeploy. Host libs like libGL/libX11 are intentionally NOT bundled,
+#               per the AppImage excludelist. Needs libfuse2 at runtime, or run with
+#               --appimage-extract-and-run.)
+#   Windows -> embrace-windows-x64.exe
 #              (static, self-contained, embedded icon; built via tools/win-build.bat)
 #
-# Resources (font / logo / icon) are compiled into the binary (see constants.cr), so no
-# resources/ directory ships alongside the executables.
+# Both jobs delegate to a committed, locally-runnable build script (build-appimage.sh /
+# win-build.bat) — the workflow just calls it. Resources (font / logo / runtime window
+# icon) are compiled into the binary (see constants.cr); the AppImage additionally
+# carries the desktop-integration icon (resources/embrace-logo.ico → hicolor PNGs).
 #
-# NOTE: best-effort first cut — validate on the first tag and adjust (the Linux
-# packaging in particular can only be exercised on a real runner).
+# The asset names are stable and version-less so the website can link
+# /releases/latest/download/<asset>; the version stays visible in the About dialog and
+# the GitHub Release title.
 
 on:
   push:
@@ -40,50 +46,31 @@ jobs:
         with:
           crystal: "1.20.0"
 
-      - name: Install SFML 3 build + runtime libraries
+      - name: Install build + packaging dependencies
         run: |
           sudo apt-get update
+          # SFML 3 build/runtime libs (linking + ldd resolution) plus the AppImage
+          # toolchain's helpers (icon extraction, ELF patching, desktop validation).
           sudo apt-get install -y --no-install-recommends \
             libgl1-mesa-dev libopenal1 libfreetype6 \
             libx11-6 libxrandr2 libxcursor1 libxi6 libudev1 \
-            libvorbisfile3 libflac12
+            libvorbisfile3 libflac12 \
+            imagemagick patchelf desktop-file-utils file
 
       - name: shards install
         run: shards install
 
-      - name: Build (release)
-        run: |
-          source setup.sh
-          shards build embrace --release --no-debug
-
-      - name: Package portable tarball
-        run: |
-          set -euo pipefail
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
-          DIST="embrace-${TAG}-linux-x86_64"
-          mkdir -p "$DIST/bin" "$DIST/lib"
-          cp bin/embrace "$DIST/bin/embrace"
-          cp -P lib/crymble-ui/locallib/sfml3/lib/linux/*.so*  "$DIST/lib/"
-          cp -P lib/crymble-ui/locallib/csfml3/lib/linux/*.so* "$DIST/lib/"
-          cat > "$DIST/embrace" <<'LAUNCH'
-          #!/usr/bin/env bash
-          # Portable launcher: load the bundled SFML/CSFML libs next to this binary.
-          HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
-          export LD_LIBRARY_PATH="$HERE/lib:${LD_LIBRARY_PATH:-}"
-          exec "$HERE/bin/embrace" "$@"
-          LAUNCH
-          chmod +x "$DIST/embrace" "$DIST/bin/embrace"
-          # Stable, version-less asset name so the website can link
-          # /releases/latest/download/embrace-linux-x86_64.tar.gz (auto-tracks the
-          # newest 2.0.x). Version stays visible: extracted folder is "$DIST", About shows the build.
-          tar czf "embrace-linux-x86_64.tar.gz" "$DIST"
-          echo "ASSET=embrace-linux-x86_64.tar.gz" >> "$GITHUB_ENV"
+      # Mirrors the Windows job (which just calls win-build.bat): build-appimage.sh
+      # sources setup.sh, builds the release binary, bundles the non-system dependency
+      # closure + multi-size icon via linuxdeploy, and writes the AppImage under temp/.
+      - name: Build AppImage
+        run: bash tools/build-appimage.sh
 
       - name: Attach to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
-          files: ${{ env.ASSET }}
+          files: temp/embrace-linux-x86_64.AppImage
           fail_on_unmatched_files: true
 
   windows:

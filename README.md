@@ -35,11 +35,14 @@ every change is a commit you can branch, diff, and travel back through.
 
 ## Download
 
-Pre-built binaries (Linux `.tar.gz`, Windows `.exe`) are attached to each
+Pre-built binaries (Linux `.AppImage`, Windows `.exe`) are attached to each
 [GitHub Release](https://github.com/holistic3fficientsolutions/embrace/releases) and mirrored at **[h3o.de](https://h3o.de)**.
-The Windows `.exe` is self-contained; the Linux archive bundles its SFML/CSFML
-libraries and a launcher (common system libs such as libGL/libopenal must be
-present). (Binaries are not kept in the repository.)
+Both are self-contained: the Windows `.exe` is static, and the Linux `.AppImage`
+bundles its SFML/CSFML and other non-system libraries (host graphics libs such as
+libGL come from the system, per the AppImage convention). Make it executable and
+run it — `chmod +x embrace-linux-x86_64.AppImage && ./embrace-linux-x86_64.AppImage`
+(needs libfuse2; on systems with only fuse3, run with `--appimage-extract-and-run`).
+(Binaries are not kept in the repository.)
 
 ## Build from Source
 

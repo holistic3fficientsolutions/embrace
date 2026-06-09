@@ -8,6 +8,11 @@
 /docs/
 /lib/
 /bin/
+# Build scratch (AppImage AppDir, downloaded linuxdeploy/appimagetool, the .AppImage
+# output). A single dir-ignore beats per-pattern rules — and is required here because
+# the "!*.*" rule above would otherwise force-track every dotted artifact (*.so.6,
+# *.AppImage, *.png, *.desktop) inside it. Keep all transient build output under temp/.
+/temp/
 /.shards/
 /shard.override.yml
 *.dwarf
@@ -31,3 +36,4 @@ pki-root-ca.json
 
 # pre-push-Hook (extensionslos, sonst von "*" oben ignoriert)
 !/scripts/githooks/pre-push
+shard.lock

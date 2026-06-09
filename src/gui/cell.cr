@@ -20,11 +20,11 @@ def convert(value : String?) : {Cell?}?
         res = {res}
     elsif !(res = value.to_f64?).nil?
         res = {res}
-    elsif value == "'true"
+    elsif value.strip == "'true"
         res = {true}
-    elsif value == "'false"
+    elsif value.strip == "'false"
         res = {false}
-    elsif value == "'nil"
+    elsif value.strip == "'nil"
         res = {nil}
     else
         res = {value}

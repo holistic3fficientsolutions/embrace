@@ -7,6 +7,24 @@ require "crymble-ui/testing/test_renderer"
 
 include Persistency
 
+# T-007: count get_value CALLS to make the diff-Shape construction budgets
+# DETERMINISTIC (machine-load-independent) instead of absolute wall-clock.
+# Reopened HERE in the spec only — production persistency.cr is byte-for-byte
+# untouched; the counter exists solely in the test binary. (A clean
+# Layer01(Cell) subclass can't compile: Layer01's Generic modules re-declare
+# `abstract def get_value`, so a subclass `super` resolves into the abstract.)
+# Counting CALLS above the cache is the algorithmic read count — a redundant
+# walk bumps it regardless of caching. probe_reads is shared across every
+# persistency instance in the test binary, so reset it right before each
+# measured op (see reads_for).
+class Persistency::Backend::Cacher(T)
+  property probe_reads : Int32 = 0
+  def get_value(field_lid : FieldLID, record_lid : RecordLID) : T
+    @probe_reads += 1
+    previous_def
+  end
+end
+
 # Performance specs for "Show changes" / diff-Shape feature.
 #
 # User report: spawning a diff-Shape burns ~1s at 100% CPU before anything
@@ -20,10 +38,16 @@ include Persistency
 #     the Configurator from scratch + runs `fieldlist_normalize!` +
 #     `apply_diff_record_filter!`. That's the hot path.
 #
-# All tests below are COMPARATIVE: measure dup vs diff on the same parent,
-# assert the ratio. Absolute wall-clock on embrace's `settle_rendering`
-# loop is unreliable in headless (different termination dynamics than the
-# real SFML event pump), so we avoid it. See memory/feedback_perf_measurement.
+# All assertions below are DETERMINISTIC or COMPARATIVE — never absolute
+# wall-clock (machine-load-dependent, flaky in headless). Two kinds:
+#   - CONSTRUCTION budgets (det 1/2): deterministic get_value read-COUNT ratios
+#     (5 vs 500 records) — catch a record-walk creeping into the O(1) dup path
+#     and a quadratic re-walk in spawn_diff_shape, independent of machine speed.
+#   - RENDER/scaling budgets (perf1/5/6/7): comparative TIME ratios (diff vs
+#     dup, or 500 vs 5) — load-robust by cancellation (same load hits both).
+# Read-count guards "the diff walk/build stays ~linear in R", NOT wall-clock;
+# a non-read quadratic (set-ops/alloc) or a render regression is backstopped
+# only by the timing ratios. See memory/feedback_perf_measurement.
 
 # Parent Shape with 5 Sales rows + 2 pending edits, fully initialized
 # (Configurator run, fieldlist built) so dup vs diff comparison is fair.
@@ -106,16 +130,31 @@ private def median_ms_3(setup : -> ShapeState, &op : ShapeState -> _) : Float64
     samples[1]
 end
 
+# get_value reads incurred by `op` on a freshly-built parent. Deterministic —
+# one run suffices (no median/warmup). Resets the shared counter right before
+# the op so build/meta reads from earlier don't leak in. dup_shape and
+# spawn_diff_shape both reuse the parent's persistency instance, so their reads
+# land on the same counter.
+private def reads_for(parent : ShapeState, &op : ShapeState -> _) : Int32
+    pers = parent.persistency
+    pers.probe_reads = 0
+    op.call(parent)
+    pers.probe_reads
+end
+
 describe "diff-Shape performance — failing baseline vs dup_shape" do
-    # 1. dup_shape is our "fast" reference point. It reuses the parent's
-    # Configurator via the clone constructor — this should be < 50ms on
-    # demo data. If this fails, the whole premise is off; investigate.
-    it "(ref) dup_shape on demo is under 50ms" do
-        setup = -> { make_parent_shape[0] }
-        t_dup = median_ms_3(setup) { |p| p.dup_shape("copy") }
-        puts "    [ref]  dup_shape         = #{t_dup.round(2)}ms"
-        t_dup.should be < 50.0,
-            "dup_shape took #{t_dup.round(2)}ms — baseline assumption violated; fast path changed?"
+    # (det 1) dup_shape is the fast reference: the clone constructor REUSES the
+    # parent's Configurator and never walks persistency per record, so its
+    # get_value count is O(1) — flat from 5 to 500 records. Deterministic
+    # replacement for the old "dup < 50ms" anchor: if a record-walk crept into
+    # the fast path, reads would jump ~R-fold (≈130×), not stay flat.
+    it "(det 1) dup_shape read-count is flat in record count (O(1) fast path)" do
+        reads_small = reads_for(make_parent_shape[0]) { |p| p.dup_shape("copy") }
+        reads_big = reads_for(make_large_parent_shape(500)[0]) { |p| p.dup_shape("copy") }
+        ratio = reads_big.to_f / {reads_small, 1}.max
+        puts "    [det 1] dup reads: 5-rec=#{reads_small} / 500-rec=#{reads_big} / ratio=#{ratio.round(1)}×"
+        ratio.should be <= 2.0,
+            "dup_shape reads scaled #{ratio.round(1)}× from 5→500 records (#{reads_small}→#{reads_big}); the clone fast path must stay O(1) — a record-walk crept in"
     end
 
     # 2. spawn_diff_shape on the same data should be comparable to
@@ -132,25 +171,19 @@ describe "diff-Shape performance — failing baseline vs dup_shape" do
             "spawn_diff_shape took #{t_diff.round(2)}ms vs dup_shape #{t_dup.round(2)}ms — #{ratio.round(1)}× slower (budget: 15×)"
     end
 
-    # 3. Absolute budget: spawn_diff_shape on demo must be under 200ms.
-    # User reports ~1s; even 200ms is generous. Sub-50ms is achievable
-    # per the dup_shape reference.
-    it "(perf 2) spawn_diff_shape on demo completes in under 200ms" do
-        setup = -> { make_parent_shape[0] }
-        t_diff = median_ms_3(setup) { |p| p.spawn_diff_shape }
-        puts "    [perf 2] spawn_diff_shape = #{t_diff.round(2)}ms"
-        t_diff.should be < 200.0,
-            "spawn_diff_shape took #{t_diff.round(2)}ms on 5-row demo (budget: 200ms)"
-    end
-
-    # 5. Scaling: 500-record spawn_diff_shape should not be catastrophic.
-    # Budget 500ms as a failing line; a O(R) fix should comfortably fit.
-    it "(perf 4) spawn_diff_shape on 500 records completes in under 500ms" do
-        setup = -> { make_large_parent_shape(500)[0] }
-        t_diff = median_ms_3(setup) { |p| p.spawn_diff_shape }
-        puts "    [perf 4] spawn_diff_shape (500 records) = #{t_diff.round(2)}ms"
-        t_diff.should be < 500.0,
-            "spawn_diff_shape on 500 records took #{t_diff.round(2)}ms (budget: 500ms)"
+    # (det 2) spawn_diff_shape stays ~linear (O(R·F)) in record count, NOT
+    # quadratic. This is the deterministic guard for the historical regression:
+    # the original diff walk was ~100× slower than dup — a redundant read-walk.
+    # By get_value count, linear is ≈23× for 100× the records; a re-introduced
+    # quadratic walk (inner record loop) would be ≈5900×. Budget 50× sits well
+    # inside that gap, replacing the old absolute 200ms/500ms wall-clock budgets.
+    it "(det 2) spawn_diff_shape read-count scales near-linearly 5→500 records (no quadratic walk)" do
+        reads_small = reads_for(make_parent_shape[0]) { |p| p.spawn_diff_shape }
+        reads_big = reads_for(make_large_parent_shape(500)[0]) { |p| p.spawn_diff_shape }
+        ratio = reads_big.to_f / {reads_small, 1}.max
+        puts "    [det 2] spawn_diff reads: 5-rec=#{reads_small} / 500-rec=#{reads_big} / ratio=#{ratio.round(1)}×"
+        ratio.should be < 50.0,
+            "spawn_diff_shape reads scaled #{ratio.round(1)}× from 5→500 records (#{reads_small}→#{reads_big}); linear is ~23×, a quadratic re-walk would be ~5900× (budget: 50×)"
     end
 
     # 6. Scaling ratio: 500-record diff should not be catastrophic.

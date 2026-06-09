@@ -45,7 +45,11 @@ alias Cell = String | Int64 | Float64 | Bool | Nil   # src/persistency.cr
 - Reference fields are the only typed fields (see [02-references](02-references.md))
 
 User input is parsed by `CellHelper.convert` in `src/gui/cell.cr`: `"42"` becomes `42i64`,
-`"3.14"` becomes `3.14f64`, `"true"` becomes `true`. Prefix `'` forces literal interpretation.
+`"3.14"` becomes `3.14f64`, and anything else stays a `String` (so plain `true` is the
+*string* `"true"`). The Bool and undefined literals are entered with a leading apostrophe:
+`'true` → `true`, `'false` → `false`, `'nil` → `nil`. Surrounding whitespace is tolerated
+(`" 'true "` → `true`). A selected Bool cell can also be flipped with the Space key (see
+tutorial #2, "space for toggling bools").
 
 ## LIDs — Local IDs
 

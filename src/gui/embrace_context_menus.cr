@@ -6,6 +6,14 @@
 
 class EmbraceApp < CrymbleUI::App
     def handle_escape : Bool
+        # T-006: Escape also cancels a pending cell cut — passively, so it does
+        # not consume an Escape the focused editor still needs (the renderer
+        # routes here before the focused widget). Clearing @cut_cell repaints
+        # the highlight off on the next rebuild.
+        if @cut_cell
+            @cut_cell = nil
+            request_rebuild
+        end
         if @context_menu
             dismiss_context_menu
             return true
@@ -142,7 +150,7 @@ class EmbraceApp < CrymbleUI::App
             shape.update(true)
             request_rebuild
         }}
-        items << {"Set to true", nil.as(String?), true, ->() {
+        items << {"Set to true", "Ctrl+T".as(String?), true, ->() {
             adapter.cell_assign({rc[0], rc[1]}, true)
             shape.update(true)
             request_rebuild

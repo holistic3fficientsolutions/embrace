@@ -387,6 +387,31 @@ class EmbraceApp < CrymbleUI::App
 
     # === Shape Panel Builder ===
 
+    # Resolve the focused shape's matrix cursor for a keyboard cell-op and
+    # yield {adapter, vm, cursor_rc}. No-ops when the shape has no matrix yet
+    # (e.g. no table selected). Runs at key-press time, so it reads the live
+    # cursor.
+    private def with_cell_cursor(shape : ShapeState) : Nil
+        adapter = shape.matrix_adapter
+        return unless adapter
+        vm = adapter.virtual_matrix
+        return unless vm
+        yield adapter, vm, vm.cursor_rc
+    end
+
+    # Run a cursor cell mutation, swallowing the data layer's "can't do that
+    # here" (ConditionsNotMet — header / aggregate / incompatible value type) so
+    # a keyboard shortcut on an unsuitable cell no-ops; always reconcile +
+    # repaint after (mirrors the rescue used by ShapeState's cell bridges).
+    private def cell_op(shape : ShapeState)
+        yield
+    rescue ConditionsNotMet
+        # cursor cell can't take this op — no-op
+    ensure
+        shape.update(true)
+        request_rebuild
+    end
+
     private def build_shape_panel(shape : ShapeState) : Nil
         shape.update
         shape.matrix_adapter.try { |a| a.on_data_changed = ->{ request_rebuild; nil } }
@@ -403,6 +428,44 @@ class EmbraceApp < CrymbleUI::App
             on_closed { shape.close; @shapes.reject! { |s| !s.open }; request_rebuild }
             register_shortcut("Alt+Left") { shape.navigate_history(-1); request_rebuild }
             register_shortcut("Alt+Right") { shape.navigate_history(1); request_rebuild }
+
+            # Cell-op keyboard shortcuts (T-006): embrace owns the cell-op
+            # meaning; these fire on the matrix cursor when the editor declines
+            # the key (QuickEntry) — see with_cell_cursor. Mirror the cell
+            # context-menu handlers; cell_op swallows ConditionsNotMet so a
+            # shortcut on an unsuitable cursor cell (header / aggregate / wrong
+            # type) no-ops cleanly.
+            register_shortcut("Ctrl+X") do
+                with_cell_cursor(shape) do |adapter, vm, rc|
+                    if adapter.cell_has_content?(rc[0], rc[1])
+                        @cut_cell = {shape.id, rc[0], rc[1]}
+                        vm.drag_source_cell = {rc[0], rc[1]}
+                        vm.mark_cursor_overlay_dirty
+                        request_rebuild
+                    end
+                end
+            end
+            register_shortcut("Ctrl+V") do
+                with_cell_cursor(shape) do |adapter, vm, rc|
+                    if c = @cut_cell
+                        cell_op(shape) { adapter.cell_move(c[1], c[2], rc[0], rc[1]) }
+                        @cut_cell = nil
+                        vm.drag_source_cell = nil
+                    end
+                end
+            end
+            register_shortcut("Insert") do
+                with_cell_cursor(shape) { |adapter, _vm, rc| cell_op(shape) { adapter.cell_insert(rc) } }
+            end
+            register_shortcut("Delete") do
+                with_cell_cursor(shape) { |adapter, _vm, rc| cell_op(shape) { adapter.cell_delete(rc) } }
+            end
+            register_shortcut("Ctrl+U") do
+                with_cell_cursor(shape) { |adapter, _vm, rc| cell_op(shape) { adapter.cell_set_undefined(rc) } }
+            end
+            register_shortcut("Ctrl+T") do
+                with_cell_cursor(shape) { |adapter, _vm, rc| cell_op(shape) { adapter.cell_assign(rc, true) } }
+            end
 
             # Shape menubar
             menubar do
@@ -1016,51 +1079,6 @@ class EmbraceApp < CrymbleUI::App
                     # forwarding (which would try to open edit/combo mode).
                     vm.as(CrymbleUI::VirtualMatrix).on_cell_activate = ->(rc : Tuple(Int32, Int32)) {
                         shape_drill_from_cell(captured_shape, rc) != nil
-                    }
-                    vm.as(CrymbleUI::VirtualMatrix).on_key_action = ->(action : CrymbleUI::VirtualMatrix::CellAction, rc : Tuple(Int32, Int32)) {
-                        adapter = captured_shape.matrix_adapter
-                        case action
-                        when .cut?
-                            if adapter && adapter.cell_has_content?(rc[0], rc[1])
-                                @cut_cell = {captured_shape.id, rc[0], rc[1]}
-                                vm.as(CrymbleUI::VirtualMatrix).drag_source_cell = {rc[0], rc[1]}
-                                vm.as(CrymbleUI::VirtualMatrix).mark_cursor_overlay_dirty
-                            end
-                        when .paste?
-                            if (c = @cut_cell) && adapter
-                                adapter.cell_move(c[1], c[2], rc[0], rc[1])
-                                @cut_cell = nil
-                                vm.as(CrymbleUI::VirtualMatrix).drag_source_cell = nil
-                                captured_shape.update(true)
-                                request_rebuild
-                            end
-                        when .insert?
-                            if adapter
-                                adapter.cell_insert({rc[0], rc[1]})
-                                captured_shape.update(true)
-                                request_rebuild
-                            end
-                        when .delete?
-                            if adapter
-                                adapter.cell_delete({rc[0], rc[1]})
-                                captured_shape.update(true)
-                                request_rebuild
-                            end
-                        when .cancel_cut?
-                            if @cut_cell
-                                @cut_cell = nil
-                                vm.as(CrymbleUI::VirtualMatrix).drag_source_cell = nil
-                                vm.as(CrymbleUI::VirtualMatrix).mark_cursor_overlay_dirty
-                            end
-                            dismiss_context_menu
-                        when .set_undefined?
-                            if adapter
-                                adapter.cell_set_undefined({rc[0], rc[1]})
-                                captured_shape.update(true)
-                                request_rebuild
-                            end
-                        end
-                        nil
                     }
                 end
                 end # vstack

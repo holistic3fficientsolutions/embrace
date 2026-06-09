@@ -1,5 +1,5 @@
 name: embrace-crystal
-version: 2.0.10
+version: 2.0.11
 
 authors:
   - Wolfgang Mayerle <wolfgang.mayerle@h3o.de>
@@ -19,10 +19,13 @@ dependencies:
     version: ~> 0.6.0
   crexcel:
     github: wolfgang371/crexcel
+    version: ~> 0.1.1
   xlsx-parser:
     github: d1ceward/xlsx-parser
+    version: ~> 1.4.0
   debug:
     github: Sija/debug.cr
+    version: ~> 2.0.4
 
 # development_dependencies:
 #   crystal-kcov:

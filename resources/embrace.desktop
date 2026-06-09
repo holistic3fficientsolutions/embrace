@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Embrace
+GenericName=Database Workbench
+Comment=Database / spreadsheet workbench
+Exec=embrace
+Icon=embrace
+Categories=Office;Database;
+# SFML 3 derives WM_CLASS from the executable basename (/proc/self/cmdline);
+# inside the AppImage that is "embrace", so the running window groups under this
+# launcher's icon in the taskbar.
+StartupWMClass=embrace
+Terminal=false
