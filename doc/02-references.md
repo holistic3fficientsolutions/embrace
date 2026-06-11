@@ -107,6 +107,21 @@ When a referenced record, field, or table is "removed":
 - The value can potentially be recovered (un-delete)
 - Orphaned references map to rank 0 ("(no reference)") in the VirtualTable
 
+## What Happens when a Referenced Record is Moved to Another Table
+
+`move_records` (see [01-tables-fields-records](01-tables-fields-records.md)) re-homes
+records into another table. A reference *is* its target record (it stores the RecordLID,
+displayed through a field), so when a record leaves a table it has left that relation:
+an inbound reference to it drops out of the target field's record set and collapses to
+`"(no reference)"` — the **same** graceful degradation as a removal above, via the
+existing rank-0 path. This is **deliberate, not a bug, and not healed**: in a
+partial-universe model (future access rights, partial merges) the referencing fields
+cannot be globally found, and a record leaving a relation breaking its inbound links is
+the correct semantics. It is **reversible** with no migration — move the record back and
+the reference resolves again (the RecordLID was preserved). The moved record's *own*
+outbound references travel with it (their targets are untouched), so they keep
+resolving in the new table.
+
 ## Self-References
 
 A table can reference itself. Example from tutorial 11: a "Women" table with a

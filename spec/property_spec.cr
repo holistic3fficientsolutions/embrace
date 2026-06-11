@@ -376,6 +376,39 @@ end
 # --- Test Loop ---
 
 describe "Property-based testing" do
+  it "move_records round-trip preserves table-structure + VT invariants" do
+    # Deterministic (not a random Gen op: the seeded world's three tables are structurally
+    # distinct, so a random move would trip the structure-match precondition and no-op).
+    # Two ISOLATED structure-matching tables (no refs in/out) so the move isn't entangled
+    # with reference degradation; both registered with the harness so the checkers cover them.
+    w = PropertyTestWorld.new(1_u64)
+    p = w.persistency
+    src = p.add_table("src_mv"); sa = p.add_field(src, "a"); sb = p.add_field(src, "b")
+    dst = p.add_table("dst_mv"); p.add_field(dst, "a"); p.add_field(dst, "b")
+    rs = (0...3).map do |i|
+      r = p.add_record(src); p.set_value(sa, r, "a#{i}"); p.set_value(sb, r, "b#{i}"); r
+    end
+    [src, dst].each do |tid|
+      c = Table::VirtualTable::Configurator(Cell, BaseCell).new(p, tid)
+      c.toggle_select(c.tree)
+      w.configurators[tid] = c
+      w.vts[tid] = c.run
+      w.selected_fields[tid] = w.field_lids(tid).to_set
+      w.rank_selected[tid] = true
+      w.table_lids << tid
+    end
+    check = -> do
+      Invariants.check_table_structure(w)
+      w.configurators.each { |tid, c| w.vts[tid] = c.run } # refresh VTs after the data change
+      Invariants.check_persistent_vt(w)
+    end
+    check.call
+    p.move_records([rs[1]], src, dst); check.call           # middle record out
+    p.move_records([rs[0], rs[2]], src, dst); check.call     # the rest out (src now empty)
+    p.get_record_lids(src).should eq([] of RecordLID)
+    p.move_records(rs, dst, src); check.call                 # all back
+    p.get_record_lids(src).should eq(rs)                     # original order restored
+  end
   it "random operations preserve invariants across data + configurator mutations" do
     master_seed = ENV.fetch("PROP_SEED", Time.utc.to_unix.to_s).to_u64
     num_runs = ENV.fetch("PROP_RUNS", "20").to_i

@@ -6,11 +6,6 @@ require "../lib/crymble-ui/src/csfml3/wrapper"
 module Constant
     # Embedded font: Cousine-Regular.ttf (Google Font, Apache 2.0, has Greek glyphs)
     FontRaw = {{ read_file("#{__DIR__}/../resources/Cousine-Regular.ttf") }}.to_slice
-    # Compile-time-embedded image bytes — single source of truth, GL-free.
-    # The texture is created lazily by CrSFMLBackend on first draw_image call,
-    # so these constants don't need an OpenGL context to initialize.
-    LogoBytes = {{ read_file("#{__DIR__}/../resources/logo-embrace-h3o.png") }}.to_slice
-    IconBytes = {{ read_file("#{__DIR__}/../resources/embrace-logo.png") }}.to_slice
     IconSize = 64
     Rank = "Rank"
     ShowAll = "(Show all records?)"

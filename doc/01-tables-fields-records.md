@@ -114,6 +114,20 @@ the `Predecessors` chain from the tail back to the head, then reverses the resul
 
 Moving a record (`move_record_by_rank`) re-links the predecessor chain.
 
+`move_records(record_lids, source_table, target_table)` re-homes a set of records
+into another, structure-matching table (`Generic::Basics`): each record keeps its
+`RecordLID` but is unlinked from the source chain, spliced into the target's, its
+`BelongsTo` rewritten, and its cells re-keyed onto the target's position-matched
+fields (single copy — the source cell is cleared). It is **its own inverse** (move the
+records back to restore), and it is the only operation that changes a record's table —
+so **`BelongsTo[record]` is no longer write-once**. Inbound references to a moved record
+collapse to `"(no reference)"` while it is out and resolve again when it is moved back;
+they are *not* healed across the move (see [02-references](02-references.md)). `changes_in_open_commit`
+(the History diff) renders a move faithfully — a removal from the source plus an addition
+to the target, with the cell re-keys suppressed (T-010); the selective-commit router
+(`records_with_writes_at`, `table_of`/`float_writes`) still routes a moved record's writes
+by table without special move-awareness (value-preserving, a known refinement).
+
 ## Higher-Level Operations
 
 The `Layer01` class (built on `Backend::Memory` via `Backend::Cacher`) provides

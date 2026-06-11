@@ -67,6 +67,93 @@ describe Persistency::Default do
         res = l.complex_query({table_lids: [hash["persons"], hash["cities"]], field_lids: [[hash["name"],hash["livesin"]], [hash["city"],hash["liesin"]]], table_joins: [{3,0}], where_not_nil_columns: [] of Int32}, true)
         res[0][0].should eq(nil) # now left hand side is empty
     end
+    it "move_records re-homes records and re-keys into matching fields" do
+        l = Persistency::Default.new
+        hash = Hash(String, FieldLID|TableLID|RecordLID).new
+        help = TableReader(Persistency::Default,Persistency::Cell).new(l, hash)
+        help << <<-EOT
+            foo
+            a   | b
+            a1  | b1
+            a2  | b2
+            a3  | b3
+        EOT
+        foo   = hash["foo"].as(TableLID)
+        foo_a = hash["a"].as(FieldLID)
+        # a structure-matching target (two value fields), built as the UX/test layer would
+        bar   = l.add_table("bar")
+        bar_a = l.add_field(bar, "a")
+        l.add_field(bar, "b")
+        r1, r2, r3 = l.get_record_lids(foo)
+        # move the MIDDLE record, then the (new) tail — exercises source tail-repair + growing target tail
+        l.move_records([r2], foo, bar)
+        l.get_record_lids(foo).should eq([r1, r3])
+        l.get_record_lids(bar).should eq([r2])
+        l.move_records([r3], foo, bar)
+        l.get_record_lids(foo).should eq([r1])
+        l.get_record_lids(bar).should eq([r2, r3])
+        # re-key: value lands on the target field once, source cell cleared (no redundancy)
+        l.get_value(bar_a, r2).should eq("a2")
+        l.get_value(foo_a, r2).should eq(nil)
+        # re-home: BelongsTo follows the record
+        l.get_table_lid(r2).should eq(bar)
+    end
+    it "move_records is its own inverse (out then back, incl. save/load)" do
+        l = Persistency::Default.new
+        hash = Hash(String, FieldLID|TableLID|RecordLID).new
+        help = TableReader(Persistency::Default,Persistency::Cell).new(l, hash)
+        help << <<-EOT
+            foo
+            a   | b
+            a1  | b1
+            a2  | b2
+            a3  | b3
+        EOT
+        foo = hash["foo"].as(TableLID)
+        bar = l.add_table("bar")
+        l.add_field(bar, "a"); l.add_field(bar, "b")
+        records = l.get_record_lids(foo)
+        before  = l.get_table(foo)
+        l.move_records(records, foo, bar)                       # all out
+        l.get_record_lids(foo).should eq([] of RecordLID)       # source emptied
+        l.get_table(bar).map(&.[2..]).should eq(before.map(&.[2..]))  # the values are now in bar
+        l.move_records(records, bar, foo)                       # all back, same order
+        l.get_record_lids(bar).should eq([] of RecordLID)       # target emptied
+        l.get_record_lids(foo).should eq(records)               # chain restored, original order
+        l.get_table(foo).should eq(before)                      # ranks + values restored
+        commit = l.context.current_commit
+        l.load(l.save)                                          # the move's nil/value chain writes serialize cleanly
+        l.context.current_commit = commit                       # load resets to RootCommit; re-point at the data
+        l.get_table(foo).should eq(before)
+    end
+    it "move_records preconditions raise ConditionsNotMet" do
+        l = Persistency::Default.new
+        hash = Hash(String, FieldLID|TableLID|RecordLID).new
+        help = TableReader(Persistency::Default,Persistency::Cell).new(l, hash)
+        help << <<-EOT
+            foo
+            a   | b
+            a1  | b1
+            a2  | b2
+
+            otherfoo
+            x   | y
+            x1  | y1
+        EOT
+        foo   = hash["foo"].as(TableLID)
+        other = hash["otherfoo"].as(TableLID)            # 2 value fields -> structurally matches foo
+        r     = l.get_record_lids(foo)
+        foreign = l.get_record_lids(other)[0]
+        bar1  = l.add_table("bar1"); l.add_field(bar1, "a")            # 1 field -> count mismatch
+        cityt = l.add_table("city"); cityf = l.add_field(cityt, "city")
+        barref = l.add_table("barref")                                # 2 fields, but field 1 is a reference
+        l.add_field(barref, "a", cityf); l.add_field(barref, "b")
+        expect_raises(ConditionsNotMet, "Cannot move, no records given; ignoring command")                        { l.move_records([] of RecordLID, foo, bar1) }
+        expect_raises(ConditionsNotMet, "Cannot move records into the same table; ignoring command")              { l.move_records(r, foo, foo) }
+        expect_raises(ConditionsNotMet, "Cannot move, a record is not in the source table; ignoring command")     { l.move_records([foreign], foo, other) }
+        expect_raises(ConditionsNotMet, "different field count")                                                  { l.move_records(r, foo, bar1) }
+        expect_raises(ConditionsNotMet, "reference shape differs")                                                { l.move_records(r, foo, barref) }
+    end
     it "dumping works" do
         l = Persistency::Default.new
         hash = Hash(String, FieldLID|TableLID|RecordLID).new
@@ -851,6 +938,34 @@ describe Persistency::Default do
         changes = l.changes_in_open_commit
         changes[table_a]?.try(&.records_removed).should eq(1)
         changes[table_b]?.try(&.records_removed).should eq(nil)  # untouched
+    end
+    it "changes_in_open_commit shows a record move as removed-from-source + added-to-target (T-010)" do
+        l = Persistency::Default.new
+        src = l.add_table("src"); sa = l.add_field(src, "a")
+        r = l.add_record(src); l.set_value(sa, r, "x")
+        dst = l.add_table("dst"); l.add_field(dst, "a")
+        l.close_and_add_commit
+        l.move_records([r], src, dst)
+        changes = l.changes_in_open_commit
+        changes[src].not_nil!.records_removed.should eq(1) # the record left the source
+        changes[dst].not_nil!.records_added.should eq(1)   # and joined the target
+        changes[src].not_nil!.cells_changed.should eq(0)   # the re-key is the move, not independent edits
+        changes[dst].not_nil!.cells_changed.should eq(0)
+        changes[src].not_nil!.records_added.should eq(0)
+        changes[dst].not_nil!.records_removed.should eq(0)
+    end
+    it "changes_in_open_commit attributes a post-move removal to the table the record was in (T-010)" do
+        l = Persistency::Default.new
+        src = l.add_table("src"); l.add_field(src, "a")
+        r = l.add_record(src)
+        dst = l.add_table("dst"); l.add_field(dst, "a")
+        l.close_and_add_commit               # C1: r created in src
+        l.move_records([r], src, dst)        # C2: r moved to dst (src now in the BelongsTo history)
+        l.close_and_add_commit
+        l.remove_record(dst, r)              # C3 (target): remove it from dst
+        changes = l.changes_in_open_commit
+        changes[dst]?.try(&.records_removed).should eq(1)  # attributed to dst (where it was), not src
+        changes[src]?.try(&.records_removed).should eq(nil)
     end
 
     # === Phase 3: selective commit via float_writes ===

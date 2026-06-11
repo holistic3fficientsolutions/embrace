@@ -33,6 +33,43 @@ describe VirtualTable do
         t = c.run
         t.to_a.should eq([] of Cell)
     end
+    it "an inbound reference shows (no reference) while the target is moved out, and resolves when moved back" do
+        l = Persistency::Default.new
+        cities = l.add_table("cities")
+        cityname = l.add_field(cities, "city")
+        boston = l.add_record(cities); l.set_value(cityname, boston, "Boston")
+        persons = l.add_table("persons")
+        pname = l.add_field(persons, "name")
+        pcity = l.add_field(persons, "city", cityname)
+        alan = l.add_record(persons); l.set_value(pname, alan, "Alan"); l.set_value(pcity, alan, boston)
+        c = Configurator(Cell,BaseCell).new(l, persons)
+        c.toggle_select(c.tree)
+        ref2rankvalue(c.run.to_a2).should eq([[1, "Alan", "1-Boston"]]) # resolves
+        # move Boston out to a structure-matching table -> the inbound reference DEGRADES (anti-heal: NOT the city name)
+        capitals = l.add_table("capitals"); l.add_field(capitals, "city")
+        l.move_records([boston], cities, capitals)
+        ref2rankvalue(c.run.to_a2).should eq([[1, "Alan", "0-(no reference)"]])
+        # move it back home -> resolves again (reversible, no migration)
+        l.move_records([boston], capitals, cities)
+        ref2rankvalue(c.run.to_a2).should eq([[1, "Alan", "1-Boston"]])
+    end
+    it "a moved row's own outbound reference still resolves in the target table" do
+        l = Persistency::Default.new
+        cities = l.add_table("cities")
+        cityname = l.add_field(cities, "city")
+        boston = l.add_record(cities); l.set_value(cityname, boston, "Boston")
+        persons = l.add_table("persons")
+        pname = l.add_field(persons, "name")
+        pcity = l.add_field(persons, "city", cityname)
+        alan = l.add_record(persons); l.set_value(pname, alan, "Alan"); l.set_value(pcity, alan, boston)
+        vips = l.add_table("vips")
+        l.add_field(vips, "name")
+        l.add_field(vips, "city", cityname) # matching shape: value col + ref to the SAME target field
+        l.move_records([alan], persons, vips)
+        c = Configurator(Cell,BaseCell).new(l, vips)
+        c.toggle_select(c.tree)
+        ref2rankvalue(c.run.to_a2).should eq([[1, "Alan", "1-Boston"]]) # Alan's own city ref still dereferences Boston
+    end
     it "works" do
         l = Persistency::Default.new
         table = l.add_table("mytable")

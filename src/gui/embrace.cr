@@ -131,16 +131,10 @@ class EmbraceApp < CrymbleUI::App
         @filter_search[key] = value
     end
 
+    # Compile-time-embedded logo, served from memory (CWD-independent); the GPU
+    # texture is created lazily by the renderer on first draw. Pair with image(...).
+    LOGO_IMAGE = embed_image("resources/logo-embrace-h3o.png")
     def initialize
-        # Register compile-time-embedded image bytes under the same paths the
-        # widgets use. The actual GPU texture is created lazily by
-        # CrSFMLBackend.draw_image on first use, so this works regardless of
-        # the current working directory and doesn't need a GL context yet.
-        # See src/constants.cr for the single source of bytes.
-        CrymbleUI::CrSFMLBackend.register_embedded_image(
-            "resources/logo-embrace-h3o.png", Constant::LogoBytes)
-        CrymbleUI::CrSFMLBackend.register_embedded_image(
-            "resources/embrace-logo.png", Constant::IconBytes)
         CrymbleUI::Theme.set(:dark)
         update_bg_color
         @last_save_version = @persistency.version
@@ -264,7 +258,7 @@ class EmbraceApp < CrymbleUI::App
                     register_shortcut("Enter") { @show_about = false; request_rebuild }
                     scroll_view(id: "about_scroll") do
                         vstack(spacing: 5.0, padding: 10.0) do
-                            image("resources/logo-embrace-h3o.png", id: "about_logo", width: 655.0, height: 655.0)
+                            image(LOGO_IMAGE, id: "about_logo", width: 655.0, height: 655.0)
                             text("")
                             text("")
                             text("Version #{Constant::Version}")
@@ -1176,7 +1170,7 @@ class EmbraceApp < CrymbleUI::App
             logo_x = (window_width - logo_w) / 2.0
             logo_y = (window_height - logo_h) / 2.0
             color = CrymbleUI::Color.new(255_u8, 255_u8, 255_u8, alpha1.clamp(0, 255).to_u8)
-            prims << CrymbleUI::DrawImage.new("resources/logo-embrace-h3o.png",
+            prims << CrymbleUI::DrawImage.new(LOGO_IMAGE,
                 CrymbleUI::Rect.new(logo_x, logo_y, logo_w, logo_h), color)
         end
 

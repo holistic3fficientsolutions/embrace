@@ -348,11 +348,29 @@ class Persistency::Backend::Memory(T)
         target = context.current_commit
         result = Hash(TableLID, TableChanges).new
         return result if target == MetaFieldLIDs::RootCommit
+        # Record MOVES (T-010): #move_records rewrites BelongsTo[record] from one
+        # (non-nil) table to another at the open commit — BelongsTo is no longer
+        # write-once. A move is, per table, a removal from the old table + an addition
+        # to the new (emitted in the moves pass below); its cell re-keys ARE the move,
+        # not independent edits (so Pass 1 skips them). Detect: a non-nil user table at
+        # target whose latest prior non-nil BelongsTo names a different table.
+        moved = Hash(RecordLID, {TableLID, TableLID}).new
+        if belongs_all = @field2record2commit2value[MetaFieldLIDs::BelongsTo]?
+            belongs_all.each do |lid, c2v|
+                cur = c2v[target]?
+                next unless cur.is_a?(Int64) && cur.as(TableLID) >= 0
+                prior : TableLID? = nil
+                c2v.each { |c, v| prior = v.as(TableLID) if c != target && v.is_a?(Int64) }
+                next unless prior && prior >= 0 && prior != cur.as(TableLID)
+                moved[lid] = {prior, cur.as(TableLID)}
+            end
+        end
         # Pass 1: cell edits per owning table
         @field2record2commit2value.each do |field_lid, r2c2v|
             next if field_lid < 0
             r2c2v.each do |record_lid, c2v|
                 next unless c2v.has_key?(target)
+                next if moved.has_key?(record_lid) # move re-keys are the move, not edits (T-010)
                 belongs = get_value(MetaFieldLIDs::BelongsTo, field_lid)
                 next unless belongs.is_a?(Int64)
                 table_lid = belongs.as(TableLID)
@@ -394,21 +412,23 @@ class Persistency::Backend::Memory(T)
             end
         end
         # Pass 3: record/field removals via BelongsTo[lid] = nil at target.
-        # remove_record / remove_field set BelongsTo[lid] to nil at the open
-        # commit. The prior non-nil value tells us which table the lid used
-        # to belong to (records can't move tables, so any prior non-nil
-        # write yields the same TableLID). Records vs fields: fields have a
-        # Names entry, records don't.
+        # remove_record / remove_field set BelongsTo[lid] to nil at the open commit.
+        # The prior non-nil value tells us which table the lid used to belong to.
+        # NB(T-009/T-010): `BelongsTo[record]` is NO LONGER write-once — #move_records
+        # can change a record's table. So we take the LATEST prior non-nil (the table
+        # the record was actually IN when removed), not its origin — otherwise a
+        # moved-then-removed record would be misattributed. The move itself is handled
+        # above (moved detection + the moves pass) as removal+addition. Still owed: the
+        # same move-awareness in records_with_writes_at and table_of/float_writes
+        # (selective commit). Records vs fields: fields have a Names entry, records don't.
         @field2record2commit2value[MetaFieldLIDs::BelongsTo].each do |lid, c2v|
             next unless c2v.has_key?(target)
             next unless c2v[target].nil?
             prior_table_lid : TableLID? = nil
             c2v.each do |c, v|
                 next if c == target
-                next if v.nil?
                 next unless v.is_a?(Int64)
-                prior_table_lid = v.as(TableLID)
-                break  # any prior non-nil write yields the right table
+                prior_table_lid = v.as(TableLID) # keep the LATEST prior non-nil (T-010)
             end
             next unless prior_table_lid
             next if prior_table_lid < 0
@@ -421,6 +441,17 @@ class Persistency::Backend::Memory(T)
                 tc.records_removed += 1
             end
             result[prior_table_lid] = tc
+        end
+        # Moves pass (T-010): render each detected move as a removal from the old table
+        # plus an addition to the new — faithful per-table, and never invisible.
+        moved.each_value do |from_to|
+            from, to = from_to
+            tc_from = result[from]? || TableChanges.new
+            tc_from.records_removed += 1
+            result[from] = tc_from
+            tc_to = result[to]? || TableChanges.new
+            tc_to.records_added += 1
+            result[to] = tc_to
         end
         result
     end
@@ -914,6 +945,48 @@ module Persistency::Generic::Basics(T)
             set_value(MetaFieldLIDs::Predecessors, succlid, predlid)
         elsif lid == last_record # otherwise: was not in the list at all (probably severals #remove called in a row by higher layer)
             set_value(meta_representant_lid, table_lid, predlid) # we remove last record/field
+        end
+    end
+    # Re-home an existing record into another table, KEEPING its RecordLID: unlink it from the
+    # source chain (via #remove, which leaves BelongsTo untouched), then append to the target
+    # chain exactly as #add_record does (Predecessors=old target tail, advance TableLastRecord).
+    private def rehome_record(record_lid : RecordLID, source_table : TableLID, target_table : TableLID)
+        remove(source_table, record_lid, MetaFieldLIDs::TableLastRecord)
+        set_value(MetaFieldLIDs::BelongsTo, record_lid, target_table)
+        set_value(MetaFieldLIDs::Predecessors, record_lid, get_value(MetaFieldLIDs::TableLastRecord, target_table))
+        set_value(MetaFieldLIDs::TableLastRecord, target_table, record_lid)
+    end
+    # Move records from `source_table` into an existing, structure-matching `target_table`:
+    # re-home each (keeping its RecordLID) and re-key its cells onto the target's position-
+    # matched fields (single copy; the source cell is cleared — no redundancy). Its own inverse:
+    # move them back to restore. Inbound references to the moved records collapse to
+    # "(no reference)" while out (standard graceful degradation) and resolve when moved back —
+    # they are deliberately NOT healed (a record leaving a table left the relation, and inbound
+    # references can't be globally found in a partial universe). NB: this is the first operation
+    # that changes a record's table, so BelongsTo[record] is no longer write-once — diff/merge/
+    # history/selective-commit consumers must not assume a record's table is stable (see the note
+    # at #changes_in_open_commit).
+    def move_records(record_lids : Array(RecordLID), source_table : TableLID, target_table : TableLID) : Nil
+        # first: checks (raise before any mutation)
+        raise ConditionsNotMet.new("Cannot move, no records given") if record_lids.empty?
+        raise ConditionsNotMet.new("Cannot move records into the same table") if source_table == target_table
+        source_records = get_record_lids(source_table).to_set
+        raise ConditionsNotMet.new("Cannot move, a record is not in the source table") unless record_lids.all? {|r| source_records.includes?(r)}
+        source_fields = get_field_lids(source_table)
+        target_fields = get_field_lids(target_table)
+        raise ConditionsNotMet.new("Cannot move, field structure does not match (different field count)") if source_fields.size != target_fields.size
+        source_fields.zip(target_fields) do |f_s, f_t|
+            if get_outward_reference(f_s) != get_outward_reference(f_t)
+                raise ConditionsNotMet.new("Cannot move, field structure does not match (reference shape differs)")
+            end
+        end
+        # finally: apply (no further error possible)
+        record_lids.each do |record_lid|
+            source_fields.zip(target_fields) do |f_s, f_t|
+                set_value(f_t, record_lid, get_value(f_s, record_lid)) # re-key onto target
+                set_value(f_s, record_lid, nil)                        # clear source (single copy)
+            end
+            rehome_record(record_lid, source_table, target_table)
         end
     end
 end # module Persistency::Generic::Basics(T)
