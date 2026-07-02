@@ -1,5 +1,5 @@
 name: embrace-crystal
-version: 2.0.12
+version: 2.0.13
 
 authors:
   - Wolfgang Mayerle <wolfgang.mayerle@h3o.de>
@@ -16,7 +16,7 @@ license: AGPL-3.0-only
 dependencies:
   crymble-ui:
     github: wolfgang371/crymbleui
-    version: ~> 0.6.0
+    branch: main
   crexcel:
     github: wolfgang371/crexcel
     version: ~> 0.1.1

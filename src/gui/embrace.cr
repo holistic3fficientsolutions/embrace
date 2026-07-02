@@ -1,42 +1,12 @@
 # SPDX-FileCopyrightText: 2026 Wolfgang Mayerle <wolfgang.mayerle@h3o.de>
 # SPDX-License-Identifier: AGPL-3.0-only
 
-# needs to come at the beginning
-{% if flag?(:win32) %}
-# needs to be at the very beginning, before Vesa driver can emit sth. to the non-existant Windows GUI console - otherwise: silent crash
-null_file = File.open(File::NULL, "w") # Open the null device for writing
-# Redirect STDOUT to null_file so that any output goes to /dev/null
-STDOUT.reopen(null_file)
-STDOUT.sync = true  # Ensure immediate flushing
-# Likewise, redirect STDERR to null_file
-STDERR.reopen(null_file)
-STDERR.sync = true
-
-# see https://github.com/crystal-lang/crystal/issues/13058
-@[Link(ldflags: "/ENTRY:wWinMainCRTStartup")]
-@[Link(ldflags: "/SUBSYSTEM:WINDOWS")]
-lib LibCrystalMain
-end
-
-lib LibC
-    alias HINSTANCE = HANDLE
-    # shellapi.h
-    fun CommandLineToArgvW(lpCmdLine : LPWSTR, pNumArgs : Int*) : LPWSTR*
-end
-
-fun wWinMain(
-    hInstance : LibC::HINSTANCE,
-    hPrevInstance : LibC::HINSTANCE,
-    pCmdLine : LibC::LPWSTR,
-    nCmdShow : LibC::Int,
-    ) : LibC::Int
-    argv = LibC.CommandLineToArgvW(pCmdLine, out argc)
-    wmain(argc, argv)
-ensure
-    LibC.LocalFree(argv) if argv
-end
-{% end %}
-
+# The Windows GUI-subsystem entry (no console window) now lives in crymble-ui's
+# src/platform/windows_gui.cr — activated by building with -Dgui (see
+# tools/win-build.bat), which redirects the std streams and sets the GUI
+# subsystem before anything can write to the non-existent console. crymble-ui is
+# required first below, so that shim runs before any SFML/GL output. A plain
+# build (no -Dgui) stays a console app — handy for debugging on Windows.
 require "crymble-ui"
 require "../../lib/crymble-ui/src/csfml3/wrapper"
 require "../persistency"
@@ -86,6 +56,9 @@ class EmbraceApp < CrymbleUI::App
     @statusbar_timer_id : Int32? = nil
     @last_hover_cell : {Int32, Int32}? = nil
     @last_hover_cell_name : String = ""
+    @last_hover_widget : CrymbleUI::Widget? = nil
+    @last_hover_widget_text : String? = nil
+    getter hover_text_walks = 0 # test instrument: parent-chain hover_text walks
 
     # Splash overlay — timer starts at first render, NOT at app construction,
     # so the animation isn't missed when startup is slow (e.g. Windows ~1-2s init).
@@ -147,7 +120,7 @@ class EmbraceApp < CrymbleUI::App
         }
         on_hover_change do
             if @statusbar_priority_remaining <= 0
-                text = find_hover_text(hovered_widget)
+                text = hover_text_for(hovered_widget)
                 # Matrix cells: check by position, cache cell to avoid redundant cell_get_name
                 if text.nil? && (pos = @last_mouse_position)
                     @shapes.each do |shape|
@@ -180,7 +153,18 @@ class EmbraceApp < CrymbleUI::App
 
     # Walk up parent chain to find nearest hover_text or matrix cell name
     # Walk up parent chain to find nearest hover_text
+    # Memoise the parent-chain hover_text walk by hovered-WIDGET identity. The
+    # hover callback fires on EVERY mouse-move (position-dependent widgets need
+    # it), but a widget's hover_text is invariant while you stay on it — so the
+    # matrix (a single widget) must not re-walk to the root every frame.
+    private def hover_text_for(widget : CrymbleUI::Widget?) : String?
+        return @last_hover_widget_text if widget.same?(@last_hover_widget)
+        @last_hover_widget = widget
+        @last_hover_widget_text = find_hover_text(widget)
+    end
+
     private def find_hover_text(widget : CrymbleUI::Widget?) : String?
+        @hover_text_walks += 1
         current = widget
         while current
             if ht = current.hover_text

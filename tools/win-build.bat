@@ -38,7 +38,9 @@ REM    its C deps (iconv, pcre2, xml2, z, gc) statically too — without it they
 REM    dynamically and a clean Windows box errors with "iconv-2.dll not found".
 REM    The vendored SFML/CSFML win32 libs are already static, so the result needs no
 REM    runtime DLLs. (Also resolves the LNK4098 LIBCMT/CRT-mix warning.)
-crystal build src\gui\embrace_main.cr -o bin\embrace.exe --release --no-debug --static ^
+REM    -Dgui: GUI subsystem / no console (the shim lives in crymble-ui's
+REM    src/platform/windows_gui.cr). Drop -Dgui for a dev build that keeps a console.
+crystal build src\gui\embrace_main.cr -o bin\embrace.exe --release --no-debug --static -Dgui ^
     --link-flags "%RES%" || (echo build failed & exit /b 1)
 
 echo.
