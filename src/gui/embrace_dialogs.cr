@@ -233,42 +233,48 @@ class EmbraceApp < CrymbleUI::App
             register_shortcut("Escape") { dialog.close; request_rebuild }
             register_shortcut("Enter") { dialog.accept; request_rebuild }
             vstack(spacing: 10.0, padding: 10.0) do
-                dialog.persistency.contexts.push(dialog.context)
-
-                table = dialog.persistency.get_table(MetaFieldLIDs::TableLastTable)
-                table.sort! { |x, y| x[2].as(String) <=> y[2].as(String) }
-                table_names = table.map(&.[2].as(String))
-                table_lids = table.map(&.[0].as(Persistency::TableLID))
-                target_idx = dialog.target_table_lid ? (table_lids.index(dialog.target_table_lid) || 0) : 0
+                # Re-target the field picker if the table selection changed.
+                dialog.sync_field_picker!
+                table_picker = dialog.table_picker
+                field_picker = dialog.field_picker
 
                 hstack(spacing: 5.0) do
                     text("Target table:")
-                    combo_box(items: table_names, selected: target_idx, width: 200.0, id: "#{dialog.id}_table") do |idx|
-                        dialog.target_table_lid = table_lids[idx]
-                        field_lids = dialog.persistency.get_field_lids(table_lids[idx])
-                        dialog.target_field_lid = field_lids.first? ? field_lids.first : nil
+                    combo_box(items: table_picker.names, selected: table_picker.lid_index, width: 200.0, id: "#{dialog.id}_table") do |idx|
+                        table_picker.select_index(idx)
                         request_rebuild
                     end
-                end
-
-                if ttl = dialog.target_table_lid
-                    field_lids = dialog.persistency.get_field_lids(ttl)
-                    field_names = field_lids.map { |fl| dialog.persistency.get_value(MetaFieldLIDs::Names, fl).as(String) }
-                    field_idx = dialog.target_field_lid ? (field_lids.index(dialog.target_field_lid) || 0) : 0
-
-                    hstack(spacing: 5.0) do
-                        text("Target field:")
-                        combo_box(items: field_names, selected: field_idx, width: 200.0, id: "#{dialog.id}_field") do |idx|
-                            dialog.target_field_lid = field_lids[idx]
-                            request_rebuild
+                    if table_picker.allow_create?
+                        button("Add table...", padding: 3.0, id: "#{dialog.id}_addtable") do
+                            creator = Dialogs::Creator.new("Add table") do |name|
+                                table_picker.add_table(name)
+                                request_rebuild
+                            end
+                            add_dialog(creator)
                         end
                     end
                 end
 
-                dialog.persistency.contexts.pop
+                hstack(spacing: 5.0) do
+                    text("Target field:")
+                    combo_box(items: field_picker.names, selected: field_picker.lid_index, width: 200.0, id: "#{dialog.id}_field") do |idx|
+                        field_picker.select_index(idx)
+                        request_rebuild
+                    end
+                    if field_picker.allow_create?
+                        button("Add field...", padding: 3.0, id: "#{dialog.id}_addfield") do
+                            creator = Dialogs::Creator.new("Add field") do |name|
+                                field_picker.add_field(name)
+                                request_rebuild
+                            end
+                            add_dialog(creator)
+                        end
+                    end
+                end
 
                 hstack(spacing: 10.0) do
-                    button("Ok", id: "#{dialog.id}_ok") { dialog.accept; request_rebuild }
+                    ok_btn = button("Ok", id: "#{dialog.id}_ok") { dialog.accept; request_rebuild }
+                    ok_btn.enabled = dialog.ready?
                     button("Cancel", id: "#{dialog.id}_cancel") { dialog.close; request_rebuild }
                 end
             end

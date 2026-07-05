@@ -4,6 +4,7 @@
 require "../global"
 require "../persistency"
 require "../constants"
+require "./tablefieldpicker"
 
 # CrymbleUI dialog state classes
 # In CrymbleUI, dialogs are not self-contained windows. Instead, they are
@@ -135,15 +136,35 @@ class FactorOut < Base
     getter persistency : Persistency::Default
     getter context : Persistency::Context
     getter field_lid : Persistency::FieldLID
-    property target_table_lid : Persistency::TableLID? = nil
-    property target_field_lid : Persistency::FieldLID? = nil
+    getter table_picker : GUI::Widget::TablePicker
+    getter field_picker : GUI::Widget::FieldPicker
 
     def initialize(title : String, @persistency : Persistency::Default, @context : Persistency::Context, @field_lid : Persistency::FieldLID, &@block : Persistency::TableLID, Persistency::FieldLID ->)
         super(title, "factorout_#{object_id}")
+        # allow_create lets the user spin up the target table (and, via the
+        # field picker, its field) inline — the "fluffy" v1 flow. The table is
+        # created empty (no prefilled record), so factor-out itself fills it
+        # with the distinct values. Dialog and both pickers share @context, so
+        # a freshly-created table/field is visible to the field picker and to
+        # #accept.
+        @table_picker = GUI::Widget::TablePicker.new(@persistency, @context, allow_create: true)
+        @field_picker = GUI::Widget::FieldPicker.new(@persistency, @context, @table_picker.lid, suppress_references: true)
+    end
+
+    # Re-target the field picker whenever the chosen table changed — a different
+    # table has different fields. Call once per rebuild (and after add_table).
+    def sync_field_picker! : Nil
+        if @table_picker.changed?
+            @field_picker = GUI::Widget::FieldPicker.new(@persistency, @context, @table_picker.lid, suppress_references: true)
+        end
+    end
+
+    def ready? : Bool
+        !@table_picker.lid.nil? && !@field_picker.lid.nil?
     end
 
     def accept
-        if (table_lid = @target_table_lid) && (field_lid = @target_field_lid)
+        if (table_lid = @table_picker.lid) && (field_lid = @field_picker.lid)
             @persistency.contexts.push(@context)
             @block.call(table_lid, field_lid)
             @persistency.contexts.pop

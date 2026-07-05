@@ -239,11 +239,14 @@ class SimpleMatrixAdapter(T, U, V)
 
     def cell_paint(row : Int32, col : Int32) : CrymbleUI::Widget
         value = cell_read({row, col})
-        is_header = !!cell_get_header_info({row, col})
-        text_color = is_header ? CrymbleUI::Theme.current.ruler_label : nil
-        # Diff-Shape highlight: if this cell was written at the diff target
-        # commit, paint it with a colored background. No-op for normal shapes.
-        diff_bg = diff_highlight_background(row, col)
+        header_info = cell_get_header_info({row, col})
+        text_color = header_info ? CrymbleUI::Theme.current.ruler_label : nil
+        # Header cells adopt the fieldlist class palette (row = green, column =
+        # blue, per-level shifted) so the perspective reads as colourfully as
+        # the field list. A diff-Shape highlight, when present, wins: if this
+        # cell was written at the diff target commit it keeps its diff colour.
+        header_bg = header_info ? GUI::FieldClassColors.header_bg(header_info[0], header_info[1]) : nil
+        bg = diff_highlight_background(row, col) || header_bg
         case value
         when ReferenceCell
             # Build dropdown list: fulfilling items first (green), then violating (red)
@@ -255,11 +258,11 @@ class SimpleMatrixAdapter(T, U, V)
             items = all_items.map(&.value.to_s)
             item_colors = Array(CrymbleUI::Color).new(items.size) { |i| i < fulfilling.size ? constraint_ok : constraint_nok }
             selected_idx = all_items.index { |rc| rc.rank == value.rank } || 0
-            # diff_bg (if set) tints the collapsed cell's background via the
+            # bg (if set) tints the collapsed cell's background via the
             # ComboBox's background_color property, while per-item constraint
             # colours remain visible in the dropdown.
             CrymbleUI::ComboBox.new(items: items, selected: selected_idx,
-                text_background_colors: item_colors, background_color: diff_bg,
+                text_background_colors: item_colors, background_color: bg,
                 id: "rc_#{row}_#{col}") do |index, _val|
                 if rc = all_items[index]?
                     cell_assign_reference(row, col, rc.rank)
@@ -273,12 +276,12 @@ class SimpleMatrixAdapter(T, U, V)
             # box and fires this callback. We persist the negation of the value
             # captured at build time (which equals the current cell value).
             captured = value
-            CrymbleUI::Checkbox.new("", checked: captured, background_color: diff_bg, id: "bool_#{row}_#{col}") do
+            CrymbleUI::Checkbox.new("", checked: captured, background_color: bg, id: "bool_#{row}_#{col}") do
                 cell_assign(row, col, captured ? "'false" : "'true")
             end
         when NilRecordStruct, NilDeadAreaStruct, Nil
-            if diff_bg
-                CrymbleUI::TextInput.new(value: "", mode: CrymbleUI::TextInputMode::QuickEntry, background_color: diff_bg)
+            if bg
+                CrymbleUI::TextInput.new(value: "", mode: CrymbleUI::TextInputMode::QuickEntry, background_color: bg)
             else
                 CrymbleUI::Text.new("")
             end
@@ -289,10 +292,10 @@ class SimpleMatrixAdapter(T, U, V)
             when Float64 then value.to_s
             else              ""
             end
-            if diff_bg && text_color
-                CrymbleUI::TextInput.new(value: cell_text, mode: CrymbleUI::TextInputMode::QuickEntry, text_color: text_color, background_color: diff_bg)
-            elsif diff_bg
-                CrymbleUI::TextInput.new(value: cell_text, mode: CrymbleUI::TextInputMode::QuickEntry, background_color: diff_bg)
+            if bg && text_color
+                CrymbleUI::TextInput.new(value: cell_text, mode: CrymbleUI::TextInputMode::QuickEntry, text_color: text_color, background_color: bg)
+            elsif bg
+                CrymbleUI::TextInput.new(value: cell_text, mode: CrymbleUI::TextInputMode::QuickEntry, background_color: bg)
             elsif text_color
                 CrymbleUI::TextInput.new(value: cell_text, mode: CrymbleUI::TextInputMode::QuickEntry, text_color: text_color)
             else

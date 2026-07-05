@@ -87,26 +87,61 @@ class FieldlistSpacer < CrymbleUI::Widget
     end
 end
 
+# Shared field-class palette. The field list *and* the perspective matrix
+# headers tint by pivot class (row = green, column = blue, aggregate = orange,
+# unused = grey) so both views speak the same visual language. Single source of
+# truth for the tokens and the per-level brightening.
+module GUI::FieldClassColors
+    extend self
+
+    def col_bg : CrymbleUI::Color;  CrymbleUI::Theme.current["fieldlist.col_bg"];  end
+    def row_bg : CrymbleUI::Color;  CrymbleUI::Theme.current["fieldlist.row_bg"];  end
+    def free_bg : CrymbleUI::Color; CrymbleUI::Theme.current["fieldlist.free_bg"]; end
+    def agg_bg : CrymbleUI::Color;  CrymbleUI::Theme.current["fieldlist.agg_bg"];  end
+
+    # Per-level cue on EVEN levels (odd stay at base — "we always start with even
+    # levels", as v1). v1 (ImGui) modulated saturation by +0.20; on its low-
+    # saturation dark base that doubled it (grey→colour, clearly legible). Today's
+    # theme base is both more saturated AND dark, where saturation barely reads —
+    # so we also nudge VALUE (brightness), the channel that carries contrast on
+    # dark colours. The value step is a no-op on the light theme (its base is
+    # already at full value), so the cue lands in both. Shared by the field list
+    # AND the perspective matrix headers. Tune these two to taste.
+    # cf. v1 framework.cr: HeaderEvenLevelAdderHSV = (0, +0.20, 0).
+    SATURATION_STEP = 0.20
+    VALUE_STEP      = 0.15
+
+    def shift_color(base : CrymbleUI::Color, level : Int32) : CrymbleUI::Color
+        return base unless level.even?
+        hsv = base.to_hsv
+        CrymbleUI::Color.from_hsv(
+            hsv[:h],
+            (hsv[:s] + SATURATION_STEP).clamp(0.0, 1.0),
+            (hsv[:v] + VALUE_STEP).clamp(0.0, 1.0),
+            hsv[:a])
+    end
+
+    # Matrix header background: row headers green, column headers blue,
+    # per-level shifted — matching the fieldlist Rows/Columns sections.
+    def header_bg(is_row : Bool, level : Int32) : CrymbleUI::Color
+        shift_color(is_row ? row_bg : col_bg, level)
+    end
+end
+
 # Module mixin: gives fieldlist build methods access to CrymbleUI::App DSL
 # (text, widget, request_rebuild, etc.) when included into EmbraceApp.
 module FieldlistGrid
-    # --- Theme-aware colors (from JSON extensible tokens) ---
-    private def fl_col_bg;   CrymbleUI::Theme.current["fieldlist.col_bg"]; end
-    private def fl_row_bg;   CrymbleUI::Theme.current["fieldlist.row_bg"]; end
-    private def fl_free_bg;  CrymbleUI::Theme.current["fieldlist.free_bg"]; end
-    private def fl_agg_bg;   CrymbleUI::Theme.current["fieldlist.agg_bg"]; end
+    # --- Theme-aware colors (shared with the perspective matrix headers) ---
+    private def fl_col_bg;   GUI::FieldClassColors.col_bg;  end
+    private def fl_row_bg;   GUI::FieldClassColors.row_bg;  end
+    private def fl_free_bg;  GUI::FieldClassColors.free_bg; end
+    private def fl_agg_bg;   GUI::FieldClassColors.agg_bg;  end
     private def fl_drag_hl;  CrymbleUI::Theme.current["fieldlist.drag_hl"]; end
     private def fl_spacer;   CrymbleUI::Theme.current["fieldlist.spacer"]; end
 
     # Slightly shift a color for even-level distinction
     private def fl_shift_color(base : CrymbleUI::Color, level : Int32) : CrymbleUI::Color
-        return base if level.even?
-        CrymbleUI::Color.new(
-            (base.r.to_i + 15).clamp(0, 255).to_u8,
-            (base.g.to_i + 15).clamp(0, 255).to_u8,
-            (base.b.to_i + 15).clamp(0, 255).to_u8,
-            base.a
-        )
+        GUI::FieldClassColors.shift_color(base, level)
     end
 
     # Field data extracted from adapter for grid building
