@@ -1,0 +1,42 @@
+{
+  "dark": {
+    "cell.empty": "#242424",
+    "constraint.nok": "#502828",
+    "constraint.ok": "#285028",
+    "fieldlist.agg_bg": "#402E1E",
+    "fieldlist.col_bg": "#1E2840",
+    "fieldlist.drag_hl": "#4060B0C8",
+    "fieldlist.free_bg": "#2D2D2D",
+    "fieldlist.row_bg": "#1E4020",
+    "fieldlist.spacer": "#606060",
+    "panel.background_warning": "#2E1E1E",
+    "panel.title_bar_warning": "#B03030",
+    "statusbar.info": "#60A0FF",
+    "statusbar.warning": "#FFA040",
+    "vhtree.line": "#666666",
+    "vhtree.selected_bg": "#2D2D50",
+    "vhtree.text": "#E0E0E0",
+    "vhtree.text_dim": "#A0A0A0",
+    "vhtree.unselected_bg": "#2D2D2D"
+  },
+  "light": {
+    "cell.empty": "#E4E4E4",
+    "constraint.nok": "#E8A0A0",
+    "constraint.ok": "#90D890",
+    "fieldlist.agg_bg": "#FFE0C0",
+    "fieldlist.col_bg": "#D0E0FF",
+    "fieldlist.drag_hl": "#64A0FFC8",
+    "fieldlist.free_bg": "#F0F0F0",
+    "fieldlist.row_bg": "#D0FFD0",
+    "fieldlist.spacer": "#A0A0A0",
+    "panel.background_warning": "#FDE8E8",
+    "panel.title_bar_warning": "#C02020",
+    "statusbar.info": "#0050B0",
+    "statusbar.warning": "#C03000",
+    "vhtree.line": "#808080",
+    "vhtree.selected_bg": "#B8C8E0",
+    "vhtree.text": "#202020",
+    "vhtree.text_dim": "#606060",
+    "vhtree.unselected_bg": "#D8D8D8"
+  }
+}

@@ -54,11 +54,13 @@ class EmbraceApp < CrymbleUI::App
     @statusbar_priority_remaining : Int32 = 0
     @statusbar_priority_text : String = ""
     @statusbar_timer_id : Int32? = nil
+    @filter_search_timer_id : Int32? = nil # debounce: rebuild the filter chips once after typing pauses
     @last_hover_cell : {Int32, Int32}? = nil
     @last_hover_cell_name : String = ""
     @last_hover_widget : CrymbleUI::Widget? = nil
     @last_hover_widget_text : String? = nil
     getter hover_text_walks = 0 # test instrument: parent-chain hover_text walks
+    getter build_count = 0      # test instrument: full-app build() invocations (rebuild cost audit)
 
     # Splash overlay — timer starts at first render, NOT at app construction,
     # so the animation isn't missed when startup is slow (e.g. Windows ~1-2s init).
@@ -188,6 +190,7 @@ class EmbraceApp < CrymbleUI::App
 
 
     def build : CrymbleUI::Widget
+        @build_count += 1 # test instrument (rebuild cost audit)
         window("H3O Embrace", 1200, 900) do
             on_closed { do_quit }
 
@@ -966,7 +969,11 @@ class EmbraceApp < CrymbleUI::App
                                     text_input(value: search_str, width: 160.0, placeholder: "search…",
                                                id: "filter_search_#{cf.column_index}_#{shape.id}") do |new_value|
                                         @filter_search[captured_search_key] = new_value
-                                        request_rebuild
+                                        # Debounce: a per-keystroke request_rebuild is a full-app rebuild
+                                        # (~82ms, a visible freeze). The TextInput shows typed chars
+                                        # immediately (its own state); only the chip narrowing waits for
+                                        # the pause. See debounce_filter_search.
+                                        debounce_filter_search
                                     end
                                 end
                                 # Adaptive wrap: flow packs as many checkboxes per row as fit
@@ -1011,6 +1018,20 @@ class EmbraceApp < CrymbleUI::App
             end
         end
         tn.children.first?.try &.hover_text = "Narrow rows by column values (autofilter: OR within column, AND between columns)"
+    end
+
+    # Filter-search typing debounce. A rebuild reconstructs the whole app (~82ms — a per-keystroke
+    # freeze); the search only narrows the chip list, so coalesce rapid keystrokes into ONE rebuild
+    # ~150ms after typing pauses. Mirrors the statusbar timer idiom (cancel pending, reschedule).
+    # STOPGAP until the framework makes a rebuild cheap (crymbleui T-056).
+    private def debounce_filter_search : Nil
+        if old = @filter_search_timer_id
+            CrymbleUI::Widget.scheduler.cancel(old)
+        end
+        @filter_search_timer_id = CrymbleUI::Widget.scheduler.schedule(150.milliseconds, repeating: false) do
+            @filter_search_timer_id = nil
+            request_rebuild
+        end
     end
 
     private def build_matrix_section(shape : ShapeState) : Nil

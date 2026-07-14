@@ -8,6 +8,7 @@ require "../persistency"
 require "../virtualtable"
 require "../fieldlist"
 require "crymble-ui"
+require "./theme_colors" # registers embrace's app-owned Theme color tokens at load
 
 # the used widgets:
 require "./tablefieldpicker"
@@ -247,6 +248,13 @@ class SimpleMatrixAdapter(T, U, V)
         # cell was written at the diff target commit it keeps its diff colour.
         header_bg = header_info ? GUI::FieldClassColors.header_bg(header_info[0], header_info[1]) : nil
         bg = diff_highlight_background(row, col) || header_bg
+        # v1 parity (dropped in the CrymbleUI port 70be1d0): a structurally empty
+        # cell — a non-assignable dead pivot intersection — reads dimmed, so
+        # "nothing goes here" stays visible. Keyed on assignability exactly like
+        # v1's matrix#calc_color; a live cell (incl. assignable-but-empty) stays flat.
+        if bg.nil? && header_info.nil? && !cell_has_content?(row, col)
+            bg = CrymbleUI::Theme.current["cell.empty"]
+        end
         case value
         when ReferenceCell
             # Build dropdown list: fulfilling items first (green), then violating (red)

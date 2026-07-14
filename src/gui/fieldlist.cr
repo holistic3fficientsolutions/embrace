@@ -3,6 +3,7 @@
 
 require "../persistency"
 require "crymble-ui"
+require "./theme_colors" # registers embrace's app-owned Theme color tokens (fieldlist.*)
 
 # Fieldlist constants and adapter interface
 # The widget implementation is in shape.cr as part of the CrymbleUI build tree.

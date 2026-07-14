@@ -47,7 +47,9 @@ Shapes bridge the data model to CrymbleUI widgets through three adapter interfac
 
 The adapter also handles assignability checks — it queries
 `Hierarchic.get_assignability(index)` to determine whether a cell is editable,
-insertable, or read-only.
+insertable, or read-only. A structurally empty cell (a non-assignable dead
+pivot intersection) is rendered with a dimmed `cell.empty` background, so an
+area where no value can go stays visually distinct from a live cell.
 
 ### SimpleVHTreeAdapter
 

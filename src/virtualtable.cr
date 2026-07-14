@@ -600,7 +600,12 @@ class VirtualTable(T, U) < Table::Lazy::Raw::Base(T)
                 node = @tree.indices.bwd(internal_col)[0]
             end
             table_lid = node.value.as(TableLID)
-                name = args[:name]? || Constant::Unnamed
+                # A blank name (nil OR "") reads as "(unnamed)": the AddField dialog
+                # submits "" for an un-named field, and "" is truthy in Crystal so a
+                # bare `|| Constant::Unnamed` would keep it empty (reference fields,
+                # dialog-only, always hit this).
+                raw_name = args[:name]?
+                name = (raw_name.nil? || raw_name.empty?) ? Constant::Unnamed : raw_name
             refers_to_field_lid = args[:refers_to_field_lid]? || nil
             # finally, mark in Configurator
             field_lid = @persistency.add_field(table_lid, name, refers_to_field_lid)

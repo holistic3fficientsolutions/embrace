@@ -3,6 +3,7 @@
 
 require "../patch"
 require "crymble-ui"
+require "./theme_colors" # registers embrace's app-owned Theme color tokens (vhtree.*)
 
 # VHTree adapter interface
 # The implementation is in shape.cr (SimpleVHTreeAdapter).

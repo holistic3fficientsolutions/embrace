@@ -214,6 +214,11 @@ class EmbraceApp < CrymbleUI::App
 
     private def execute_vhtree_move(shape : ShapeState, from_adapter : SimpleVHTreeAdapter, move : {Symbol, TableLID, FieldLID, TableLID, FieldLID, Table::VirtualTable::Tree}) : Nil
         persistency = shape.persistency
+        # v1 parity (dropped in the CrymbleUI port 70be1d0): keep a moved field
+        # VISIBLE in the target Shape when the source field was visible AND the
+        # target table is expanded — mirrors v1's check_move. (Without this the
+        # newly-created field defaults hidden.)
+        reveal = from_adapter.is_selected? && !!shape.configurator_ref.try(&.is_expanded?(move[5]))
         persistency.contexts.push(shape.context)
         begin
             case move[0]
@@ -229,8 +234,10 @@ class EmbraceApp < CrymbleUI::App
                     move_field_name = persistency.get_value(MetaFieldLIDs::Names, move[4]).as(String)
                     set_statusbar_info("Original field '#{move_field_name}' has unused values - not deleting it")
                 end
+                shape.configurator_ref.try(&.toggle_select(move[5][field_lid])) if reveal
             when :outwards
                 field_lid = persistency.move_field_outwards(move[1], move[2], move[3], move[4])
+                shape.configurator_ref.try(&.toggle_select(move[5][field_lid])) if reveal
             end
         ensure
             shape.context = persistency.contexts.pop
