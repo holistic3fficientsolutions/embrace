@@ -421,7 +421,7 @@ class EmbraceApp < CrymbleUI::App
                     if adapter.cell_has_content?(rc[0], rc[1])
                         @cut_cell = {shape.id, rc[0], rc[1]}
                         vm.drag_source_cell = {rc[0], rc[1]}
-                        vm.mark_cursor_overlay_dirty
+                        vm.mark_drag_overlay_dirty
                         request_rebuild
                     end
                 end
@@ -432,6 +432,7 @@ class EmbraceApp < CrymbleUI::App
                         cell_op(shape) { adapter.cell_move(c[1], c[2], rc[0], rc[1]) }
                         @cut_cell = nil
                         vm.drag_source_cell = nil
+                        vm.mark_drag_overlay_dirty
                     end
                 end
             end
