@@ -693,6 +693,10 @@ end
 class ShapeState
     BRANCH_TIPS_NAMES = ["Mainline"] + Array.mix(%w(Andes Atlantic Berlin Brooklyn Cairo Colorado Delhi Denali Dublin Everest Florida Geneva Giza Himalaya Hudson India Ireland Jamaica Jordan Kenya Kilimanjaro Kyoto Lisbon London Madrid Mars Milan Missouri Monaco Montana Moscow Munich Nairobi Nile Norway Oxford Pacific Paris Pisa Pluto Portland Prague Quebec Rhine Rome Sahara Saturn Seville Shanghai Sicily Sydney Thames Tokyo Toronto Tuscany Uganda Utah Vatican Venice Venus Vienna Wales Warsaw Yukon Zurich Alps Rockies Congo Danube Seine Tigris Euphrates Fuji Pyrenees Apennines Kalahari Mojave Ganges Yangtze Mekong Mississippi Victoria Ontario Erie Michigan Superior Baikal Caspian Jupiter Mercury Neptune Ceres Orion Polaris Sirius Andromeda Betelgeuse Cassiopeia Draco Pegasus Ursa Lyra Hydra Taurus Libra Virgo Gemini Scorpius Sagittarius Capricorn Aquarius Pisces Appalachia Baltic Caucasus Crimea Galilee Patagonia Savannah Tasmania Thessaly Tirol Zanzibar Aegean Appalachia Balkans Carpathians Dinarides Dolomites Jura Karakoram Kunlun Pamirs Pontic Rhodope Tian Urals Zagros Pyrenees Atlas Sierra K2 Annapurna Kangchenjunga Shasta Rainier Elbrus Kinabalu Mauna Montserrat Sunda Java Sumatra Borneo Newfoundlands Tasmania Madagascar Mallorca Greenland Corsica Crete Sardinia Maldives Bahamas Barbados Bermuda Fiji Samoa Tahiti Tonga Vanuatu Aruba Cayman Falkland Faroe Galápagos Canary Hawaii Kodiak Orkney Shetland Skye Mull Jura Capri Mykonos Rhodes Santorini Lesbos Ithaca Crete Malta Gozo Zanzibar Seychelles).uniq.group_by { |name| name[0] }.map { |k, v| v })
 
+    @@shape_counter = 0
+    getter number : Int32 # stable per-shape ordinal, stamped once at creation — restores v1's window
+    # number (the CrymbleUI port dropped it, so every shape rendered an identical "Shape"). Monotonic,
+    # never reused (matching v1's IDContainer), so it survives other shapes closing.
     property title : String
     property open : Bool = true
     getter id : String
@@ -703,7 +707,7 @@ class ShapeState
     @configurator : Table::VirtualTable::Configurator(Cell, BaseCell)? = nil
     @fieldlist : Table::Lazy::Fieldlist(FieldlistCell, Cell)? = nil
     getter fieldlist : Table::Lazy::Fieldlist(FieldlistCell, Cell)?
-    @table_lid : TableLID? = nil
+    getter table_lid : TableLID? = nil
     @matrix_userdata_rc : Table::Lazy::Pivot::Hierarchic(Cell, BaseCell, FieldlistCell)? = nil
     @mirror_aggregates = true
     @commit_leaves = Array(CommitLID).new
@@ -768,6 +772,7 @@ class ShapeState
 
     def initialize(@title : String, @persistency : Persistency::Default, @context : Context = Context.new, @table_lid : TableLID? = nil)
         @id = "shape_#{object_id}"
+        @number = (@@shape_counter += 1)
         # Pass @table_lid so callers (e.g. shape_add_for_table) that spawn a
         # Shape pre-selected on a specific table actually see that table —
         # otherwise the TablePicker defaulted to the prefill and @table_lid
@@ -779,6 +784,7 @@ class ShapeState
     # Clone constructor for duplicating shapes
     protected def initialize(@title : String, other : ShapeState)
         @id = "shape_#{object_id}"
+        @number = (@@shape_counter += 1)
         @persistency = other.@persistency
         @context = other.@context.dup
         @widget_table_picker = GUI::Widget::TablePicker.new(@persistency, @context, lid: other.@table_lid, allow_create: true, suppress_empty: true, prefill_table: true)
@@ -799,6 +805,12 @@ class ShapeState
                 end
             end
         end
+        # Inherit @commit_path so update() finds the copied current_commit ON the branch (not a
+        # "new_branch") and preserves the navigated history position — a dup of a shape viewing
+        # @Mainline 2/4 stays at 2/4 instead of jumping to the tip 4/4. update() re-derives
+        # leaves/path/rank; only this pre-check read of @commit_path (see update, "if @commit_path.index")
+        # needs to be seeded so the copied current_commit isn't misread as a new branch.
+        @commit_path = other.@commit_path.dup
         update(true)
     end
 
@@ -1121,6 +1133,38 @@ class ShapeState
 
     def branch_names : Array(String)
         BRANCH_TIPS_NAMES[0...@commit_leaves.size]
+    end
+
+    # The pinned table's display name, or nil if the shape isn't table-pinned. Unnamed → "(unnamed)"
+    # (consistent with the field-name fix, 499f5fb).
+    def table_name : String?
+        lid = @table_lid
+        return nil unless lid
+        raw = @persistency.get_value(MetaFieldLIDs::Names, lid)
+        raw.is_a?(String) && !raw.empty? ? raw : "(unnamed)"
+    end
+
+    # The current branch's name (the tip the shape is viewing), or nil before update seeds the leaves.
+    def current_branch_name : String?
+        return nil if @commit_leaf_rank < 0
+        branch_names[@commit_leaf_rank]?
+    end
+
+    # Meaningful automatic panel title, re-derived live every rebuild (the panel's identity is `id:`,
+    # not the title, so this is free to change): "Shape #N, TableName (@branch X/N)". The "#N" restores
+    # v1's stable per-shape number; the table/branch/commit context is net-new. A derived view (diff/drill,
+    # whose title carries "▸") keeps its explicit title instead.
+    def display_title : String
+        return @title if @title.includes?('▸')
+        String.build do |s|
+            s << "Shape #" << @number
+            if name = table_name
+                s << ", " << name
+            end
+            if !@commit_path.empty? && (branch = current_branch_name)
+                s << " (@" << branch << ' ' << (current_commit_index + 1) << '/' << @commit_path.size << ')'
+            end
+        end
     end
 
     def current_commit_index : Int32

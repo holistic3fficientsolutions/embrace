@@ -109,6 +109,23 @@ describe ShapeState do
       shape2.persistency.should eq shape1.persistency
       shape2.vhtree_adapter.should_not be_nil
     end
+
+    it "preserves the navigated history position (a dup of @branch 2/4 stays 2/4, not the tip)" do
+      persistency = make_empty_persistency
+      shape = create_shape(persistency)
+      shape.do_commit # 2nd commit (do_commit also re-updates)
+      shape.do_commit # 3rd commit — a multi-commit history
+      total = shape.commit_path.size
+      total.should be > 2
+      shape.navigate_history(-1) # step one commit back, off the tip
+      orig_idx = shape.current_commit_index
+      orig_idx.should eq(total - 2) # setup guard: confirm we are OFF the tip (tip index = total-1)
+
+      dup = shape.dup_shape("Copy")
+
+      dup.commit_path.size.should eq(total)        # same branch/path
+      dup.current_commit_index.should eq(orig_idx) # position preserved (the bug reset it to the tip)
+    end
   end
 
   describe "close" do

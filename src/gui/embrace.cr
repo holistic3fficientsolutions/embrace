@@ -95,15 +95,17 @@ class EmbraceApp < CrymbleUI::App
     # {shape_id, table_lid}. Unchecked = present in the set. Cleared on Commit!.
     @commit_deferred : Set({String, TableLID}) = Set({String, TableLID}).new
 
-    # Per-filter-row text search: narrows which distinct-value checkboxes are
-    # visible in the filter UI. Keyed by {shape_id, column_index}. Ephemeral.
-    # Missing key → empty string (no filter).
-    @filter_search : Hash({String, Int32}, String) = Hash({String, Int32}, String).new("")
+    # Per-filter-row text search — narrows which distinct-value checkboxes are visible in the filter
+    # UI. Keyed by {shape_id, column_index}, ephemeral. Each value is a Source(String) the "search…"
+    # TextInput adopts via bind: (two-way — an edit writes the Source, no callback/rebuild). A missing
+    # key auto-creates + STORES a Source("") (no filter); storing (not a shared default) gives the
+    # stable per-key identity bind: needs across rebuilds. Bounded: dropped on filter remove / clear-all.
+    @filter_search : Hash({String, Int32}, CrymbleUI::Source(String)) = Hash({String, Int32}, CrymbleUI::Source(String)).new { |h, k| h[k] = CrymbleUI::Source(String).new("") }
 
     # Test-facing helper: set a per-filter-row search string programmatically
     # without routing through the on_text input callback. Used by filter_ui_spec.
     def commit_filter_search(key : {String, Int32}, value : String) : Nil
-        @filter_search[key] = value
+        @filter_search[key].set(value) # the block-default auto-creates the cell; writes the SHARED bound Source
     end
 
     # Compile-time-embedded logo, served from memory (CWD-independent); the GPU
@@ -405,7 +407,7 @@ class EmbraceApp < CrymbleUI::App
         # can be reproduced without manual resizing.
         panel_width = (ENV["EMBRACE_SHAPE_PANEL_WIDTH"]?.try(&.to_f) || 1100.0)
         panel_height = (ENV["EMBRACE_SHAPE_PANEL_HEIGHT"]?.try(&.to_f) || 750.0)
-        window_panel(shape.title, x: cascade_x, y: cascade_y, width: panel_width, height: panel_height, id: shape.id) do
+        window_panel(shape.display_title, x: cascade_x, y: cascade_y, width: panel_width, height: panel_height, id: shape.id) do
             on_closed { shape.close; @shapes.reject! { |s| !s.open }; request_rebuild }
             register_shortcut("Alt+Left") { shape.navigate_history(-1); request_rebuild }
             register_shortcut("Alt+Right") { shape.navigate_history(1); request_rebuild }
@@ -925,6 +927,7 @@ class EmbraceApp < CrymbleUI::App
                         if !shape.filter_state.empty?
                             button("Clear all", padding: 3.0, id: "filter_clear_#{shape.id}") do
                                 shape.filter_clear!
+                                @filter_search.reject! { |k, _| k[0] == shape.id } # drop this shape's search cells (parity with per-filter remove)
                                 request_rebuild
                             end
                         end
@@ -940,9 +943,9 @@ class EmbraceApp < CrymbleUI::App
                             distinct = shape.column_distinct_values(cf.column_index).sort_by { |v, _| filter_value_display(v).downcase }
                             total_count = distinct.size
                             search_key = {shape.id, cf.column_index}
-                            search_str = @filter_search[search_key]
+                            search_source = @filter_search[search_key] # persistent per-key Source (block-default creates once)
                             # Narrow visible values by case-insensitive substring match.
-                            search_lc = search_str.downcase
+                            search_lc = search_source.get.downcase
                             visible = search_lc.empty? ? distinct : distinct.select { |v, _| filter_value_display(v).downcase.includes?(search_lc) }
                             # Tristate state across visible values.
                             visible_values = visible.map(&.[0]).to_set
@@ -967,15 +970,19 @@ class EmbraceApp < CrymbleUI::App
                                         @filter_search.delete(captured_search_key)
                                         request_rebuild
                                     end
-                                    text_input(value: search_str, width: 160.0, placeholder: "search…",
-                                               id: "filter_search_#{cf.column_index}_#{shape.id}") do |new_value|
-                                        @filter_search[captured_search_key] = new_value
-                                        # Debounce: a per-keystroke request_rebuild is a full-app rebuild
-                                        # (~82ms, a visible freeze). The TextInput shows typed chars
-                                        # immediately (its own state); only the chip narrowing waits for
-                                        # the pause. See debounce_filter_search.
-                                        debounce_filter_search
-                                    end
+                                    # Two-way bound: the input adopts the per-key Source, so a keystroke writes
+                                    # the search value directly (no seed, no manual write-back). on_event only
+                                    # carries the debounce side-effect. Change AND Cancel both mutate the value
+                                    # (Cancel = Escape reverts the shared cell), so both must re-narrow.
+                                    text_input(bind: search_source, width: 160.0, placeholder: "search…",
+                                               id: "filter_search_#{cf.column_index}_#{shape.id}",
+                                               on_event: ->(_v : String, ev : CrymbleUI::TextInputEvent) {
+                                                   # Debounce: the chip narrowing is a full-app rebuild (~82ms);
+                                                   # it waits for a typing pause. The input echoes chars immediately
+                                                   # (its own render). See debounce_filter_search.
+                                                   debounce_filter_search if ev.change? || ev.cancel?
+                                                   nil
+                                               })
                                 end
                                 # Adaptive wrap: flow packs as many checkboxes per row as fit
                                 # the panel width, reflows on resize. Tristate "all" is the
