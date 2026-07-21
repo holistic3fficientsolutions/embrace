@@ -89,6 +89,18 @@ Drag-and-drop on the VHTree supports three move types (computed by `calc_move`):
 5. **Update**: Changes propagate: Persistency → VT → Fieldlist → Hierarchic → Matrix
    (all lazy, driven by `version` checks)
 
+`ShapeState#update`'s change gate sums **persistency + context + the fieldlist's raw
+memory version**. The fieldlist term is essential: a Field-list drop writes only the
+fieldlist's own memory table (class/level/rank), not persistency, yet it changes the
+pivot's structure. The gate is what fires `matrix_adapter.invalidate_all!` — the push
+signal that makes the VirtualMatrix clear its cached content buffer. Without it, a
+structure change that keeps the same grid dimensions (e.g. merged cells splitting after
+a field move) leaves ghost pixels in the vacated separator bands: crymbleui's reconcile
+clear only triggers on a dimension change, and the regression is guarded by
+`spec/gui/fieldlist_move_stale_separator_spec.cr`. It is deliberately the raw memory
+version, not `Fieldlist#version`, which would pull the VirtualTable's update at gate
+time — before the gate body has repaired the context mid-history-navigation.
+
 ## Shape Operations
 
 Available from the GUI (`src/gui/embrace.cr`):

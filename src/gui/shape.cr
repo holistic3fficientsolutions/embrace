@@ -1331,7 +1331,15 @@ class ShapeState
     def update(force_update = false) : Nil
         @persistency.contexts.push(@context)
         new_table = @widget_table_picker.changed?
-        version = @persistency.version + @persistency.context.version
+        # The gate must include the FIELDLIST's version: a Field-list drop writes only the
+        # fieldlist's own memory table (class/level/rank), not persistency, yet it changes the
+        # pivot's structure. Without it, invalidate_all! below never fires for such a change and
+        # the matrix keeps its viewport_cache buffer; when the new structure has the same grid
+        # dimensions (crymbleui's reconcile clear only triggers on a dims change), pixels vacated
+        # by old merged cells survive as ghost separators. Deliberately the raw MEMORY version,
+        # not Fieldlist#version: the latter pulls the VirtualTable's update at gate time — before
+        # the commit-path fix-up below has repaired the context mid-history-navigation.
+        version = @persistency.version + @persistency.context.version + (@fieldlist.try(&.table_memory.version) || 0)
         if force_update || new_table || (@version != version)
             # update branching information
             current_commit = @persistency.context.current_commit
