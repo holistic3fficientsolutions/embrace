@@ -38,6 +38,13 @@ The lazy `update` method:
    - `@aggregates[level]` — arrays of column indices per level
    - Enforces: `@row_headers.size == @col_headers.size` (padded with empty arrays)
 
+   The pivot assumes **aggregate levels are dense** (no gaps) — an empty aggregate
+   level would count as an extra row in `Aggregate#size` and materialize a phantom
+   `NilDeadArea` band under every record. That invariant is maintained upstream by the
+   fieldlist (`Fieldlist#update` densifies aggregate levels; see [05-fieldlist](05-fieldlist.md)),
+   not here. Empty *header* levels, by contrast, are transparent and load-bearing, so
+   the equalization above deliberately keeps them.
+
 2. **`populate_hierarchy_tree`** — builds the tree top-down:
    - Level 0: Creates root `Simple` with `@row_headers[0]` and `@col_headers[0]`
    - For each intersection cell of the root Simple:

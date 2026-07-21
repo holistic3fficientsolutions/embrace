@@ -199,6 +199,8 @@ class Table::Lazy::Fieldlist(T,U) < Table::Lazy::Raw::Base(T)
                 @table_internal[[new_row, ColumnIndices::Level.value]] = 0i64
                 @table_internal[[new_row, ColumnIndices::SortAscending.value]] = true
             end
+            # third, enforce "no left gaps" for aggregate levels (below) so a plain move behaves like the transpose
+            densify_aggregate_levels!
             @version = version
         end
         # The Name column is derived from @parent's field names, but the inner
@@ -245,6 +247,24 @@ class Table::Lazy::Fieldlist(T,U) < Table::Lazy::Raw::Base(T)
             ColumnIndices::SortAscending,
             ColumnIndices::Name
         ].map(&.value))
+    end
+    # Enforce the fieldlist's "no left gaps" invariant for AGGREGATE levels. A move can strand an aggregate
+    # at level 1 with level 0 empty (the field that held level 0 became a row header); the pivot then renders
+    # the empty level as a phantom NilDeadArea band under every record (Aggregate#size counts the empty level
+    # as a row). The transpose already densifies aggregate levels (fieldlist_from_a2 with do_set_hierarchy);
+    # a plain move does not, so update() re-densifies here. Writes are GUARDED (only on a real change) so this
+    # is idempotent — no version churn (like update()'s add/remove pass, it settles in a couple of passes).
+    # Aggregate-scoped only: empty ROW/COL-header levels are transparent and load-bearing (the pivot's row/col
+    # equalization at parse_fieldlist relies on trailing empty levels), so they are intentionally left alone.
+    private def densify_aggregate_levels!
+        # agg_to_a2 already groups the aggregates by level (padded for the transpose). Drop the nil padding
+        # and any empty level, then reassign each aggregate to its dense level index. Guarded write → this is
+        # idempotent, so it settles without version churn (like update()'s add/remove pass).
+        agg_to_a2.map(&.compact).reject(&.empty?).each_with_index do |rows, level|
+            rows.each do |ri|
+                @table_internal[[ri, ColumnIndices::Level.value]] = level.to_i64 if @table_internal[[ri, ColumnIndices::Level.value]] != level.to_i64
+            end
+        end
     end
     private def agg_to_a2 : Array(Array(Int32?))
         a2 = Array(Array(Int32?)).new

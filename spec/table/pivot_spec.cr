@@ -145,6 +145,30 @@ describe Table::Lazy::Pivot do
         hier_pivot_table.hyperplane_move(0, [2,0], [2,1]).should eq([2,1]) # move back again
         hier_pivot_table.to_a.should eq([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 120, 10, 50, 10, 100, 80, 100, 100, 100, 80, "Carol", "Alice", "Carol", "Carol", "Alice", "Carol", "Carol", "Alice", "Bob", "Alice", "Alpha", "Beta", "Alpha", "Alpha", "Beta", "Gamma", "Gamma", "Gamma", "Gamma", "Gamma", "Q1", "Q3", "Q4", "Q4", "Q4", "Q1", "Q2", "Q4", "Q4", "Q2"])
     end
+    it "a ROW-header level gap adds no phantom band (symmetric to the aggregate gap)" do
+        # The symmetric move: an OUTER row header (level 0) is moved to a column header, leaving an inner
+        # row header at level 1 with level 0 empty. Unlike aggregates, empty header levels are transparent
+        # (Simple#size derives from the cluster tree, not @row_headers.size), so this must already be benign
+        # WITHOUT compacting headers (compacting them would break the absolute-level indexing in
+        # populate_hierarchy_tree). This guards that invariant.
+        raw_table = Helper(BaseCell).string2table(2, <<-EOT)
+            Alice   10
+            Bob     20
+            Alice   30
+            EOT
+        indexed = Table::Lazy::Raw::Indexed.new(raw_table, 1)
+        fl_gap = Helper(FieldlistCell).array2table(4, [
+            0, Table::Lazy::Pivot::Classes::Row      .value, 1, true, # row header at level 1 -> level 0 empty
+            1, Table::Lazy::Pivot::Classes::Aggregate.value, 0, false])
+        fl_gap = Table::Lazy::Raw::Indexed.new(fl_gap, 1)
+        gapped = Table::Lazy::Pivot::Hierarchic(BaseCell, BaseCell, FieldlistCell).new(indexed, fl_gap)
+        fl_clean = Helper(FieldlistCell).array2table(4, [
+            0, Table::Lazy::Pivot::Classes::Row      .value, 0, true,
+            1, Table::Lazy::Pivot::Classes::Aggregate.value, 0, false])
+        fl_clean = Table::Lazy::Raw::Indexed.new(fl_clean, 1)
+        clean = Table::Lazy::Pivot::Hierarchic(BaseCell, BaseCell, FieldlistCell).new(indexed, fl_clean)
+        gapped.size.should eq(clean.size)
+    end
     it "kanban use cases" do
         # Name    Task          State         Project     Priority
         raw_table = Helper(BaseCell).string2table(5, <<-EOT)

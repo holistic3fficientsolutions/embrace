@@ -58,6 +58,14 @@ Multiple levels create hierarchical drill-down in the pivot:
 
 See [07-pivot-hierarchic](07-pivot-hierarchic.md) for how levels drive nested pivots.
 
+**No left gaps (aggregate levels).** Aggregate levels must be dense — level `n+1`
+may not exist while level `n` is empty. A move can violate this (e.g. the field at
+aggregate level 0 becomes a row header, stranding another aggregate at level 1), which
+would make the pivot render an empty `NilDeadArea` band under every record. `Fieldlist#update`
+therefore re-densifies aggregate levels on every derivation (guarded, idempotent) — the
+same compaction the diagonal transpose already applies — so a plain move behaves like the
+transpose. Header levels are *not* densified: empty ones are transparent in the pivot.
+
 ## Sort Direction
 
 `SortAscending` (Bool) controls whether cluster values are sorted ascending or

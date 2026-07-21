@@ -198,14 +198,17 @@ module FieldlistGrid
                 GUI::Widget::FieldlistConstants::RowClass::Aggregate, 0, show_sort: false)
         end
 
-        # Group by level
+        # Group by level. Aggregate levels are dense — Fieldlist#update enforces "no left gaps" — so we
+        # iterate the full 0..max range, one row per level. The widget deliberately does NOT skip empty
+        # levels: that would mask a gap the data can no longer have (a stranded aggregate densifies at the
+        # source, so a genuinely empty level here would be a fieldlist bug worth surfacing, not hiding).
         lines = Hash(Int32, Array(FieldInfo)).new { |h, k| h[k] = [] of FieldInfo }
         agg_fields.each { |f| lines[f.level] << f }
-        sorted_levels = lines.keys.sort
-        outer_level = sorted_levels.last + 1
+        max_agg_level = agg_fields.max_of(&.level)
+        outer_level = max_agg_level + 1
 
         # Build each level as its own inner RecursiveGrid (single row of fields + trailing)
-        outer_rows = sorted_levels.map do |level|
+        outer_rows = (0..max_agg_level).map do |level|
             line_fields = lines[level]
             insert_rank = line_fields.last.rank + 1
 

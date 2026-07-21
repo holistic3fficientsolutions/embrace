@@ -6,74 +6,79 @@ require "crymble-ui/testing/test_renderer"
 
 include Persistency
 
-# Regression guard for the tester-reported "Perspective blanks after collapse/re-expand" bug:
-# after collapsing and re-expanding the Field list, the Perspective (VirtualMatrix) painted every
-# non-Rank field as empty (Rank survived on the sticky ruler layer). The data layer was always
-# correct — this was a crymbleui content-Layer reconcile-render bug (a reconciled Layer losing its
-# owner and dropping out of the render), fixed by the reconciled-Layer owner re-sync work. This test
-# drives the exact reconcile (Field list toggle → Perspective reconcile) and asserts the CONTENT
-# layer (non-Rank cells) keeps its ink. It PASSES at current HEAD (the fix is in) and would go RED if
-# that reconcile-render fix regressed. Data-level checks can't catch it (widgets keep their values;
-# the pixels vanish), so this reads the rendered content-layer backend.
+# Integration guard for the tester bug: load demo, collapse the Perspective section, expand it again
+# → only the Rank column shows, the rest of the body is blank. Root cause + unit guard live in
+# crymbleui (spec/rendering/matrix_viewport_stale_after_reexpand_spec.cr): a TreeNode collapse zeros
+# the matrix cells' bounds directly, and update_visible_cells' early-exit left them at 0×0 on re-expand
+# → the zero-size collect guard dropped the whole body. Asserted via the render-DISPOSITION oracle
+# (a dropped cell has a nil disposition), NOT pixels — the headless backend RETAINS pixels where a
+# real SFML RenderTexture goes blank, so a pixel assertion is a false green here.
 
-private def make_perspective_app : EmbraceApp
+private def make_demo_app : EmbraceApp
   app = EmbraceApp.new
   hash = Hash(String, FieldLID | TableLID | RecordLID).new
   help = TableReader(Persistency::Default, Persistency::Cell).new(app.persistency, hash)
   help << <<-EOT
-      People
-      Name | City | Age
-      Alice | Boston | 30
-      Bob | Boston | 25
-      Carol | Denver | 40
-      Dave | Denver | 35
-      Eve | Austin | 28
+      Cities
+      City | Country
+      Arizona | USA
+      Boston | USA
+      Mordor | Middle-earth
+      Shire | Middle-earth
+
+      Persons
+      Person | City_City
+      Alan | Boston
+      Melanie | Arizona
+      Sauron | Mordor
+      Samwise | Shire
+
+      Times
+      Time
+      Former
+      Present
+      Future
+
+      Projects
+      Project
+      Law
+      Peace
+      Survival
+
+      Allocations
+      Person_Person | Time_Time | Project_Project | Allocation
+      Alan | Present | Law | 100
+      Sauron | Former | Peace | 100
+      Samwise | Former | Peace | 100
+      Melanie | Future | Survival | 100
   EOT
-  lid = hash["People"].as(TableLID)
   app.shapes.clear
-  app.shapes << ShapeState.new("People", app.persistency, app.persistency.context.clone, lid)
+  app.shapes << ShapeState.new("Shape", app.persistency, app.persistency.context.clone, hash["Allocations"].as(TableLID))
   app.request_rebuild
   app
 end
 
-# Count "ink" pixels (darker than the light cell background) on the Perspective CONTENT layer —
-# the non-Rank data cells. Sampled on a coarse grid for speed. Blank content = near-zero ink.
-private def content_ink(shape : ShapeState) : Int32
-  vm = shape.matrix_adapter.not_nil!.virtual_matrix.not_nil!
-  content = vm.layer.not_nil!
-  be = content.backend.not_nil!.as(CrymbleUI::Testing::TestRenderBackend)
-  count = 0
-  y = 0
-  while y < be.height
-    x = 0
-    while x < be.width
-      px = be.get_pixel(x, y)
-      count += 1 if px && (px.r.to_i + px.g.to_i + px.b.to_i) < 620 # dark text on light bg
-      x += 4
-    end
-    y += 4
-  end
-  count
-end
-
-describe "Perspective survives Field list collapse/re-expand" do
-  it "keeps the content cells painted after collapsing and re-expanding the Field list" do
-    app = make_perspective_app
+describe "Perspective survives collapse + re-expand of its section" do
+  it "re-paints the body cells after collapsing and re-expanding the Perspective" do
+    app = make_demo_app
     renderer = CrymbleUI::Testing::TestRenderer.new(1200, 800)
     renderer.settle_rendering(app)
     shape = app.shapes.first
-    fl_id = "fieldlist_#{shape.id}"
+    m_id = "matrix_#{shape.id}"
+    vm = shape.matrix_adapter.not_nil!.virtual_matrix.not_nil!
 
-    ink_before = content_ink(shape)
-    ink_before.should be > 0 # sanity: the perspective paints data initially
+    # Collapse + re-expand is layout-only (toggle → mark_needs_layout); render_frame (NOT
+    # request_rebuild, which recreates the matrix and masks the bug) applies it via the real pipeline.
+    app.find(m_id).not_nil!.as(CrymbleUI::TreeNode).toggle # collapse (zeros the cells)
+    renderer.render_frame(app)
+    app.find(m_id).not_nil!.as(CrymbleUI::TreeNode).toggle # re-expand
+    renderer.render_frame(app)
 
-    app.find(fl_id).not_nil!.as(CrymbleUI::TreeNode).toggle # collapse
-    app.request_rebuild; renderer.settle_rendering(app)
-    app.find(fl_id).not_nil!.as(CrymbleUI::TreeNode).toggle # re-expand
-    app.request_rebuild; renderer.settle_rendering(app)
-
-    ink_after = content_ink(shape)
-    # The bug blanked the content layer → ink_after ≈ 0. Fixed → the content is repainted.
-    ink_after.should be >= (ink_before // 2)
+    # The visible body cells (non-Rank) must have been PAINTED in the re-expand frame — a dropped cell
+    # has a nil disposition. Before the fix these were all nil (blank body, only Rank surviving).
+    body = vm.active_cells.select { |k, _| k[1] >= 1 }.values
+    body.should_not be_empty
+    painted = body.count { |cell| !renderer.widget_disposition(cell).nil? }
+    painted.should eq(body.size)
   end
 end
