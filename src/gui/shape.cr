@@ -257,24 +257,32 @@ class SimpleMatrixAdapter(T, U, V)
         end
         case value
         when ReferenceCell
-            # Build dropdown list: fulfilling items first (green), then violating (red)
-            constraint_ok  = CrymbleUI::Theme.current["constraint.ok"]
-            constraint_nok = CrymbleUI::Theme.current["constraint.nok"]
-            fulfilling = value.each_defined_fulfilling.to_a
-            breaking = value.each_defined_breaking.to_a
-            all_items = fulfilling + breaking
-            items = all_items.map(&.value.to_s)
-            item_colors = Array(CrymbleUI::Color).new(items.size) { |i| i < fulfilling.size ? constraint_ok : constraint_nok }
-            selected_idx = all_items.index { |rc| rc.rank == value.rank } || 0
-            # bg (if set) tints the collapsed cell's background via the
-            # ComboBox's background_color property, while per-item constraint
-            # colours remain visible in the dropdown.
-            CrymbleUI::ComboBox.new(items: items, selected: selected_idx,
-                text_background_colors: item_colors, background_color: bg,
-                id: "rc_#{row}_#{col}") do |index, _val|
-                if rc = all_items[index]?
-                    cell_assign_reference(row, col, rc.rank)
-                end
+            # The collapsed cell shows ONLY the referenced value — O(1), no dropdown build and no
+            # constraint-graph eval. The full item list (fulfilling green, then breaking red) with each
+            # item's rank as payload is produced by the provider on FIRST expand, so a screenful of
+            # reference cells no longer pays O(visible_cells * referenced_table_size) every rebuild.
+            # bg (if set) tints the collapsed cell via background_color; the picked item's rank rides
+            # reconcile, so a pick after a rebuild-while-open still assigns the right reference.
+            CrymbleUI::ComboBox.new(
+                selected_text: value.value.to_s,
+                background_color: bg,
+                id: "rc_#{row}_#{col}",
+                items_provider: -> : CrymbleUI::ComboBox::LazyItems {
+                    constraint_ok  = CrymbleUI::Theme.current["constraint.ok"]
+                    constraint_nok = CrymbleUI::Theme.current["constraint.nok"]
+                    fulfilling = value.each_defined_fulfilling.to_a
+                    breaking = value.each_defined_breaking.to_a
+                    all = fulfilling + breaking
+                    colors = Array(CrymbleUI::Color).new(all.size) { |i| i < fulfilling.size ? constraint_ok : constraint_nok }
+                    {
+                        items:    all.map(&.value.to_s),
+                        colors:   colors.as(Array(CrymbleUI::Color)?),
+                        selected: all.index { |rc| rc.rank == value.rank } || 0,
+                        payloads: all.map(&.rank),
+                    }
+                }
+            ) do |rank, _val|
+                cell_assign_reference(row, col, rank)
             end
         when Bool
             # Bool cells are checkboxes (as in the pre-crymbleui ImGui build):
@@ -1014,25 +1022,24 @@ class ShapeState
         end
 
         # Column → FieldLID map + detection of the Rank pseudo-column.
-        # Built once; used as O(1) lookup during the cell walk.
-        # Uses a "name scan" approach, but only F² times (not F² × R × F):
-        # once per column rather than once per cell.
+        # Built once; used as O(1) lookup during the cell walk. Resolved STRUCTURALLY: the
+        # column's flat id (hyperplane_get_id) → VirtualTable#column_identity. Never by name —
+        # names are labels, not identity (two fields may share a name; a user field may be
+        # named "Rank"). O(F): one id resolution per column.
         col_to_field = Hash(Int32, FieldLID).new
         rank_col : Int32? = nil
         if row_count >= 2
+            vt = @unfiltered_vt.not_nil!.as(Table::VirtualTable::VirtualTable(Cell, BaseCell))
             @persistency.contexts.push(@context)
             begin
                 col_count.times do |col|
-                    name = rc.hyperplane_get_name(1, [1, col])
-                    next if name.empty?
-                    if name == "Rank"
+                    next unless col_id = rc.hyperplane_get_id(1, [1, col]) # nil: dead cell
+                    case identity = vt.column_identity(col_id)
+                    when Table::VirtualTable::PseudoFields::Rank
                         rank_col = col
-                        next
-                    end
-                    field_lid = open_field_lids.find { |f|
-                        @persistency.get_value(MetaFieldLIDs::Names, f) == name
-                    }
-                    col_to_field[col] = field_lid if field_lid
+                    when FieldLID
+                        col_to_field[col] = identity
+                    end # other pseudo columns stay unannotated (safer than guessing)
                 end
             ensure
                 @persistency.contexts.pop
@@ -1135,13 +1142,12 @@ class ShapeState
         BRANCH_TIPS_NAMES[0...@commit_leaves.size]
     end
 
-    # The pinned table's display name, or nil if the shape isn't table-pinned. Unnamed → "(unnamed)"
-    # (consistent with the field-name fix, 499f5fb).
+    # The pinned table's display name, or nil if the shape isn't table-pinned. Blank -> "(unnamed)",
+    # via the one read-time owner (Persistency#display_name).
     def table_name : String?
         lid = @table_lid
         return nil unless lid
-        raw = @persistency.get_value(MetaFieldLIDs::Names, lid)
-        raw.is_a?(String) && !raw.empty? ? raw : "(unnamed)"
+        @persistency.display_name(lid)
     end
 
     # The current branch's name (the tip the shape is viewing), or nil before update seeds the leaves.
@@ -1334,9 +1340,10 @@ class ShapeState
         # The gate must include the FIELDLIST's version: a Field-list drop writes only the
         # fieldlist's own memory table (class/level/rank), not persistency, yet it changes the
         # pivot's structure. Without it, invalidate_all! below never fires for such a change and
-        # the matrix keeps its viewport_cache buffer; when the new structure has the same grid
-        # dimensions (crymbleui's reconcile clear only triggers on a dims change), pixels vacated
-        # by old merged cells survive as ghost separators. Deliberately the raw MEMORY version,
+        # the matrix keeps its viewport_cache buffer; pixels vacated by old merged cells then
+        # survive as ghost separators. (crymbleui's reconcile clear is keyed on adapter-instance
+        # IDENTITY, which embrace holds stable — one adapter reused across rebuilds — so it never
+        # auto-clears here; this invalidate_all! push is what must.) Deliberately the raw MEMORY version,
         # not Fieldlist#version: the latter pulls the VirtualTable's update at gate time — before
         # the commit-path fix-up below has repaired the context mid-history-navigation.
         version = @persistency.version + @persistency.context.version + (@fieldlist.try(&.table_memory.version) || 0)

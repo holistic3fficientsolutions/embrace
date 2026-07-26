@@ -320,7 +320,7 @@ class Configurator(T,U) # TODO(vtable): collapse this Configurator namespace int
         end
     end
     private def update_table(node : Tree, stash)
-        name = @persistency.get_value(MetaFieldLIDs::Names, node.value.as(TableLID)).as(String)
+        name = @persistency.display_name(node.value.as(TableLID)) # blank -> "(unnamed)"
         postfix = ""
         if @is_expanded[node]
             update_node(node, PseudoFields::ShowAll, PseudoFields::ShowAll, stash)
@@ -354,7 +354,7 @@ class Configurator(T,U) # TODO(vtable): collapse this Configurator namespace int
             else
                 prefix = FieldAffixes::Empty+" "
             end
-            field_name = @persistency.get_value(MetaFieldLIDs::Names, field).as(String)
+            field_name = @persistency.display_name(field) # blank -> "(unnamed)"
             postfix = ""
             if @is_expanded[node.parent.not_nil!] # we only show the numbers if the parent table is expanded
                 num_outs = @persistency.get_outward_reference(field) ? 1 : 0
@@ -435,6 +435,7 @@ class VirtualTable(T, U) < Table::Lazy::Raw::Base(T)
         property tables = BidirHash(Int32, Tree).new # for mapping; necessary e.g. for #join
         property indices = BidirHash({Tree,FieldLID|PseudoFields}, Int32).new # => flat column
         property user_columns = Array(Int32).new # UserColumn => FlatInternalColumn
+        property column_user_ids = BidirHash(Int32, Int32).new # stable user id (the #hyperplane_get_ids currency) => FlatInternalColumn
         def initialize(@configurator : Configurator(T,U))
         end
     end
@@ -600,12 +601,11 @@ class VirtualTable(T, U) < Table::Lazy::Raw::Base(T)
                 node = @tree.indices.bwd(internal_col)[0]
             end
             table_lid = node.value.as(TableLID)
-                # A blank name (nil OR "") reads as "(unnamed)": the AddField dialog
-                # submits "" for an un-named field, and "" is truthy in Crystal so a
-                # bare `|| Constant::Unnamed` would keep it empty (reference fields,
-                # dialog-only, always hit this).
-                raw_name = args[:name]?
-                name = (raw_name.nil? || raw_name.empty?) ? Constant::Unnamed : raw_name
+                # Storage keeps the TRUTH: an un-named field stores "" (the AddField dialog
+                # submits ""). The "(unnamed)" placeholder is applied at READ time by
+                # Persistency#display_name — one owner for every display surface, and rename/
+                # table-create can't leak a differently-rendered blank.
+                name = args[:name]? || ""
             refers_to_field_lid = args[:refers_to_field_lid]? || nil
             # finally, mark in Configurator
             field_lid = @persistency.add_field(table_lid, name, refers_to_field_lid)
@@ -667,6 +667,20 @@ class VirtualTable(T, U) < Table::Lazy::Raw::Base(T)
         col = @tree.user_columns[index[1]]
         tree, field_lid = @tree.indices.bwd(col)
         @tree.configurator.get_fqn(tree[field_lid])
+    end
+    def hyperplane_get_id(dimension : Int32, index : Index) : Int32?
+        assert(dimension == 1)
+        @tree.column_user_ids.bwd(@tree.user_columns[index[1]]) # the STABLE user id — the #hyperplane_get_ids currency (path-keyed, survives tree rebuilds), NOT the positional flat column
+    end
+    # Structural identity of a stable user column id (as returned by #hyperplane_get_id and
+    # #hyperplane_get_ids, and as persisted in the fieldlist's Column values): the FieldLID
+    # the column renders, or its pseudo field (Rank, ...).
+    # Deliberately scoped to the FIELD part: in a multi-table VT the same FieldLID can occur
+    # via different reference paths (distinct tree nodes), so a caller needing path identity
+    # needs the {node, field} pair — this resolver serves per-field consumers (e.g. the diff).
+    def column_identity(col_id : Int32) : FieldLID | PseudoFields
+        update
+        @tree.indices.bwd(@tree.column_user_ids[col_id])[1]
     end
     def hyperplane_get_default(dimension : Int32, index : Index) : T|Nil
         assert(dimension == 1) # only columns have types
@@ -979,8 +993,10 @@ class VirtualTable(T, U) < Table::Lazy::Raw::Base(T)
                         @tree.indices[{table,f}] = user_column
                     end
                     if @tree.configurator.is_selected?(n) # user requested field
-                        @tree.configurator.user_ids.add(@tree.configurator.user_id_mgr.get_id(path + [f])) # we populate in Configurator in the order of VT
+                        user_id = @tree.configurator.user_id_mgr.get_id(path + [f])
+                        @tree.configurator.user_ids.add(user_id) # we populate in Configurator in the order of VT
                         @tree.user_columns << user_column # those columns need IDs; we need to pass the "path" as an arg Array
+                        @tree.column_user_ids[user_id] = user_column # queryable form of the pairwise user_ids/user_columns order
                     end
                 end
             end

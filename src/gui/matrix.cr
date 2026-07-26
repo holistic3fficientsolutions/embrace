@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 require "../patch"
-require "../cache"
 require "crymble-ui"
 
 # Matrix adapter interface and helpers

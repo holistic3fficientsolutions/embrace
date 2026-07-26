@@ -58,10 +58,7 @@ class WeakKeyMap(K, V)
     def [](key : K) : V
         self[key]?.as(V) # V may or may not include Nil
     end
-    # the following methods don't make much sense for this lazily cleaning container class
-    private def delete(key : K)
-        @hash.delete(Key.new(key))
-    end
+    # each cleans dead (collected-key) entries lazily as it iterates; the container has no eager delete.
     private def each
         @hash.each do |(key, value)|
             @hash.delete(key) if !key.value

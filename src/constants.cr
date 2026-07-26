@@ -4,9 +4,6 @@
 require "../lib/crymble-ui/src/csfml3/wrapper"
 
 module Constant
-    # Embedded font: Cousine-Regular.ttf (Google Font, Apache 2.0, has Greek glyphs)
-    FontRaw = {{ read_file("#{__DIR__}/../resources/Cousine-Regular.ttf") }}.to_slice
-    IconSize = 64
     Rank = "Rank"
     ShowAll = "(Show all records?)"
     Unnamed = "(unnamed)"

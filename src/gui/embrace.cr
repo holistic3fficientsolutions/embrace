@@ -44,6 +44,8 @@ class EmbraceApp < CrymbleUI::App
 
     getter persistency : Persistency::Default
     getter shapes : Array(ShapeState)
+    getter filename : String?          # the open document's path (nil = unsaved); drives ^S enablement
+    getter last_save_version : Int32   # @persistency.version at last successful save; unsaved-changes guard
 
     # Theme state
     @dark_theme : Bool = true
@@ -457,17 +459,7 @@ class EmbraceApp < CrymbleUI::App
                     menu_item("Commit", "^O") { shape.do_commit; set_statusbar_info("Committed"); request_rebuild }
                     menu_item("Import table...") do
                         dialog = Dialogs::ImportTable.new("Import table...", "*.xlsx") do |filename, tablename|
-                            begin
-                                ctx = shape.context.dup
-                                shape.persistency.contexts.push(ctx)
-                                table_lid = shape.persistency.import(filename, tablename)
-                                new_shape = ShapeState.new("Shape", shape.persistency, shape.persistency.context, table_lid)
-                                @shapes << new_shape
-                                shape.persistency.contexts.pop
-                                set_statusbar_info("Import successful")
-                            rescue ex
-                                set_statusbar_warning("Import failed - format inappropriate")
-                            end
+                            import_document(shape, filename, tablename)
                             request_rebuild
                         end
                         add_dialog(dialog)
@@ -611,9 +603,7 @@ class EmbraceApp < CrymbleUI::App
                 non_empty = changes.select { |_, tc| !tc.empty? }
                 # Resolve table names once + sort alphabetically (case-insensitive).
                 named_changes = non_empty.map do |table_lid, tc|
-                    name_raw = @persistency.get_value(MetaFieldLIDs::Names, table_lid)
-                    name = name_raw.is_a?(String) ? name_raw : "?"
-                    {table_lid, name, tc}
+                    {table_lid, @persistency.display_name(table_lid), tc} # blank -> "(unnamed)"
                 end.sort_by { |_, name, _| name.downcase }
                 # Tristate "commit all changes" header — only shown when ≥2 change rows.
                 if named_changes.size >= 2

@@ -82,7 +82,7 @@ class TablePicker
         @persistency.contexts.push(@context)
         table_lid = @persistency.add_table(name)
         if @prefill_table
-            @persistency.add_field(table_lid, Constant::Unnamed)
+            @persistency.add_field(table_lid, "") # truth: un-named; displays as "(unnamed)"
             @persistency.add_record(table_lid)
         end
         @context = @persistency.contexts.pop
@@ -120,7 +120,7 @@ class TablePicker
                 @names << "(no table)"
             end
             @lids += table.map(&.[0].as(Persistency::TableLID?))
-            @names += table.map(&.[2].as(String))
+            @names += table.map { |row| @persistency.display_name(row[0].as(Persistency::TableLID)) } # blank -> "(unnamed)"
             index = @lids.index(@lid)
             if index.nil?
                 @changed = true
@@ -246,7 +246,7 @@ class FieldPicker
             if @table_lid
                 field_lids.each do |lid|
                     if !@suppress_references || @persistency.get_value(MetaFieldLIDs::RefersTo, lid).nil?
-                        name = @persistency.get_value(MetaFieldLIDs::Names, lid).as(String)
+                        name = @persistency.display_name(lid) # blank -> "(unnamed)"
                         @lids << lid
                         @names << name
                     end

@@ -157,6 +157,11 @@ alias Default = Layer01(Cell)   # the standard persistency type
    The underlying cell values remain, making un-delete possible.
 2. **Untyped by default**: only reference fields have a type. This maximizes flexibility.
 3. **Names are optional**: the system addresses everything by LID, never by name.
+   Storage keeps the truth — a never-named or renamed-to-empty field/table stores a
+   blank name. Display surfaces show `(unnamed)` instead, applied by exactly one
+   owner (`Persistency#display_name`); edit surfaces (the rename dialog's prefill)
+   read the raw name, so an unnamed entity prefills an empty box, not placeholder
+   text. Records are never named at all — they are labeled by Rank.
 4. **Sparse by default**: undefined cells cost no storage.
 
 ## See Also

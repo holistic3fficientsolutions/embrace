@@ -57,7 +57,12 @@ class EmbraceApp < CrymbleUI::App
     private def show_table_context_menu(shape : ShapeState, node : Interface::GUI::VHTreeAdapter?, table_lid : TableLID, table_name : String, pos : CrymbleUI::Vec2 = CrymbleUI::Vec2.new(300.0, 300.0)) : Nil
         items = [
             {"Rename table '#{table_name}'...", nil.as(String?), true, ->() {
-                dialog = Dialogs::Renamer.new("Rename table", table_name) do |name|
+                # Prefill = the RAW stored name (an un-named table prefills an EMPTY box, not the
+                # "(unnamed)" placeholder the menu label shows).
+                shape.persistency.contexts.push(shape.context)
+                raw = shape.persistency.get_value(MetaFieldLIDs::Names, table_lid)
+                shape.persistency.contexts.pop
+                dialog = Dialogs::Renamer.new("Rename table", raw.is_a?(String) ? raw : "") do |name|
                     shape.persistency.contexts.push(shape.context)
                     shape.persistency.set_value(MetaFieldLIDs::Names, table_lid, name)
                     shape.context = shape.persistency.contexts.pop
@@ -91,7 +96,11 @@ class EmbraceApp < CrymbleUI::App
         is_reference = !shape.persistency.get_outward_reference(field_lid).nil?
         items = [
             {"Rename field '#{field_name}'...", nil.as(String?), true, ->() {
-                dialog = Dialogs::Renamer.new("Rename field", field_name) do |name|
+                # Prefill = the RAW stored name (see the table renamer above).
+                shape.persistency.contexts.push(shape.context)
+                raw = shape.persistency.get_value(MetaFieldLIDs::Names, field_lid)
+                shape.persistency.contexts.pop
+                dialog = Dialogs::Renamer.new("Rename field", raw.is_a?(String) ? raw : "") do |name|
                     shape.persistency.contexts.push(shape.context)
                     shape.persistency.set_value(MetaFieldLIDs::Names, field_lid, name)
                     shape.context = shape.persistency.contexts.pop
@@ -231,7 +240,7 @@ class EmbraceApp < CrymbleUI::App
                 if persistency.get_field(move[4]).empty?
                     persistency.remove_field(move[3], move[4])
                 else
-                    move_field_name = persistency.get_value(MetaFieldLIDs::Names, move[4]).as(String)
+                    move_field_name = persistency.display_name(move[4]) # blank -> "(unnamed)"
                     set_statusbar_info("Original field '#{move_field_name}' has unused values - not deleting it")
                 end
                 shape.configurator_ref.try(&.toggle_select(move[5][field_lid])) if reveal

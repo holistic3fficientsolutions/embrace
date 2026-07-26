@@ -133,6 +133,29 @@ As a `Table::Lazy::Raw::Base(U)`, VirtualTable implements the core lazy table in
 - `map_hyperplane(dimension, index)` — maps row/column hyperplane operations back to
   the persistency layer (add/remove record, add/remove field)
 
+### Column Identity
+
+Columns carry the Configurator's **stable user column id** (`Int32`, path-keyed, stable
+across VT tree rebuilds) as their identity currency through the whole generic table
+stack — the same ids `hyperplane_get_ids` returns in bulk and the fieldlist persists in
+its Column values. (The *internal flat column* is positional and generation-scoped; it
+never leaves the VT.)
+
+- `hyperplane_get_id(dimension, index)` — the stable column id behind any cell, routed
+  through every lazy layer (Filter, Pivot, …) down to the VT root; `nil` for a pivot's
+  dead cells. The structural counterpart of `hyperplane_get_name`: names are labels,
+  ids are identity (names need not be unique — see [01](01-tables-fields-records.md)).
+- `VirtualTable#column_identity(col_id)` — resolves a stable column id to the
+  `FieldLID | PseudoFields` it renders. This lives at the VT boundary on purpose: the
+  generic table classes stay decoupled from persistency types and only ever move the
+  `Int32`. Note the resolver returns the *field* part of the identity; in a multi-table
+  VT the same FieldLID can occur via different reference paths (distinct tree nodes),
+  so path-sensitive consumers need the `{node, field}` pair instead.
+
+Consumers that need to know *which field* a rendered column shows (e.g. the diff-Shape's
+change attribution) resolve `hyperplane_get_id` → `column_identity` — never by comparing
+display names.
+
 ### ReferenceCell Construction
 
 When `VirtualTable#[]?` encounters a reference field, it constructs a `ReferenceCell(U)`

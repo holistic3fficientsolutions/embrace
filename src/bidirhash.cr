@@ -8,13 +8,6 @@ class BidirHash(K, V)
         @fwd = Hash(K,V).new
         @bwd = Hash(V,K).new
     end
-    def initialize(hash : Hash(K,V))
-        @fwd = Hash(K,V).new
-        @bwd = Hash(V,K).new
-        hash.each do |k,v|
-            self[k] = v
-        end
-    end
     def size : Int32
         @fwd.size
     end
@@ -32,9 +25,6 @@ class BidirHash(K, V)
     end
     def has_key?(k : K) : Bool
         @fwd.has_key?(k)
-    end
-    def has_value?(v : V) : Bool
-        @bwd.has_key?(v)
     end
     def delete(k : K) : V|Nil
         if has_key?(k)

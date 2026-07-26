@@ -2,7 +2,7 @@
 
 All data views in embrace — from raw in-memory storage to hierarchic pivot tables —
 share a common table abstraction defined in `src/table/`. This document covers the
-full class hierarchy. See also `src/table/table.md` for the UML diagram.
+full class hierarchy.
 
 ## Class Hierarchy
 
@@ -157,7 +157,7 @@ All table types expose the same hyperplane interface (defined in `Table::Lazy::B
 The `dimension` parameter specifies which axis (0 = rows, 1 = columns, etc.).
 The `index` specifies where in the table.
 
-**Behaviour varies by table type** — see `doc/hyperplanes.md` for the full comparison:
+**Behaviour varies by table type:**
 - `Raw::Base`: operates on full hyperplanes at root level
 - `VirtualTable`: dimension 0 = add/remove records, dimension 1 = add/remove fields; `hyperplane_move` not supported (use rank assignment instead)
 - `Pivot::Hierarchic`: cells can be as small as single intersections; `hyperplane_move` reassigns clusters; `hyperplane_add` creates siblings or clones
@@ -195,5 +195,3 @@ and a set of column groups, it displays aggregated values:
 - [03-configurator-and-virtual-table](03-configurator-and-virtual-table.md) — VirtualTable builds on this hierarchy
 - [06-pivot-simple](06-pivot-simple.md) — Pivot::Simple details
 - [07-pivot-hierarchic](07-pivot-hierarchic.md) — Pivot::Hierarchic details
-- `src/table/table.md` — UML class diagram
-- `doc/hyperplanes.md` — hyperplane behaviour comparison across table types

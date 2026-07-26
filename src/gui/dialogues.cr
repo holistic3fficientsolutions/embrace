@@ -204,7 +204,7 @@ class DisAssociateFields < Base
         persistency.contexts.push(@context)
         persistency.get_field_lids(@table_lid).each do |lid|
             @field_lids << lid
-            @field_names << persistency.get_value(MetaFieldLIDs::Names, lid).as(String)
+            @field_names << persistency.display_name(lid) # blank -> "(unnamed)"
             @field_selected << keep.includes?(lid)
         end
         persistency.contexts.pop

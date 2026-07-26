@@ -88,6 +88,12 @@ abstract class Table::Lazy::Base(T) < Table::Base(T) # T shall be later String?|
         table, index2 = map_cell(index)
         table.hyperplane_get_name(dimension, index2)
     end
+    # Flat column id at the root table (the same id currency as #hyperplane_get_ids), resolved
+    # per cell. Structural counterpart of #hyperplane_get_name: names are labels, ids are identity.
+    def hyperplane_get_id(dimension : Int32, index : Index) : Int32? # must be overridden by root tables
+        table, index2 = map_cell(index)
+        table.hyperplane_get_id(dimension, index2)
+    end
     def hyperplane_get_default(dimension : Int32, index : Index) : T|Nil # must be overridden by root tables
         res = map_hyperplane(dimension, index).not_nil!
         res[0].hyperplane_get_default(res[1], res[2])

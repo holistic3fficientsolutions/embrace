@@ -247,7 +247,10 @@ describe "Drill-down Shape consistency" do
             end
             break if target
         end
-        pending("couldn't locate a Region cell in drilled matrix") unless target
+        # The fixture (make_configured_shape + drill) deterministically exposes a Region cell; if a
+        # refactor stops producing one, that's a regression to FAIL on, not a silent pending-skip that
+        # would let the rows-drop assertion below never run.
+        target.should_not be_nil
         begin
             adapter.cell_assign(target.not_nil!, "elsewhere")
         rescue ex

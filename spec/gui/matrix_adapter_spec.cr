@@ -146,10 +146,10 @@ describe SimpleMatrixAdapter do
       shape = create_shape(persistency)
       adapter = shape.matrix_adapter.not_nil!
       rows, cols = adapter.get_scrollorder
-      # cell_move with same source/dest should be safe
+      # A self-move (same source/dest) is a no-op and must return the SAME coordinates — asserting the
+      # value catches a wrong-coord return that the old is_a?(Tuple) type-check (always true) could not.
       r, c = rows[0], cols[0]
-      result = adapter.cell_move(r, c, r, c)
-      result.is_a?(Tuple(Int32, Int32)).should be_true
+      adapter.cell_move(r, c, r, c).should eq({r, c})
     end
 
     it "get_scrollorder returns headers at tail (sticky-compatible)" do

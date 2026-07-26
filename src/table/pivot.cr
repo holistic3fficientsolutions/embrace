@@ -787,15 +787,29 @@ class Table::Lazy::Pivot::Hierarchic(T,U,V) < Table::Lazy::Raw::Base(T)
         index2 = get_index(clusters, tables.size)
         (0..1).map {|i| (index2[i]+offset2[i]).as(Int32)} # return new position
     end
+    # Route a cell index one level down: map_index (to Simple or Aggregate), then that table's
+    # map_cell (to the next underlying table — from there Lazy::Base routes on to the root).
+    # Returns nil for "dead" cells, where the routing raises. Shared by the per-column
+    # hyperplane_get_name / hyperplane_get_id resolvers below.
+    private def route_cell_to_parent(index : Index)
+        table, index2 = map_index(index) # to Simple or Aggregate; deliberately OUTSIDE the rescue — an un-updated pivot must stay loud (No Fallbacks)
+        begin
+            table.map_cell(index2) # to next underlying table
+        rescue # since we have some "dead" cells
+            nil
+        end
+    end
     def hyperplane_get_name(dimension : Int32, index : Index) : String
         # dimension gets ignored for Hierarchic
-        table, index2 = map_index(index) # to Simple or Aggregate
-        begin
-            table2, index3 = table.map_cell(index2) # to next underlying table
-            table2.hyperplane_get_name(1, index3) # will be routed to root table (VirtualTable)
-        rescue # since we have some "dead" cells
+        if routed = route_cell_to_parent(index)
+            routed[0].hyperplane_get_name(1, routed[1]) # will be routed to root table (VirtualTable)
+        else
             ""
         end
+    end
+    def hyperplane_get_id(dimension : Int32, index : Index) : Int32? # flat root column id; nil on dead cells
+        # dimension gets ignored for Hierarchic
+        route_cell_to_parent(index).try { |table, index2| table.hyperplane_get_id(1, index2) }
     end
     def get_assignability(index : Index) : Assignability | Nil
         update

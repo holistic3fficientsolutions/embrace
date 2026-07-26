@@ -28,8 +28,7 @@ class EmbraceApp < CrymbleUI::App
     # table without losing their current Shape configuration.
     def shape_add_for_table(table_lid : TableLID) : Nil
         context = @persistency.context.clone
-        name_raw = @persistency.get_value(MetaFieldLIDs::Names, table_lid)
-        title = name_raw.is_a?(String) ? name_raw : "Shape"
+        title = @persistency.display_name(table_lid) # blank -> "(unnamed)"
         shape = ShapeState.new(title, @persistency, context, table_lid)
         @shapes << shape
         request_rebuild
@@ -37,17 +36,53 @@ class EmbraceApp < CrymbleUI::App
 
     # === File Operations ===
 
-    private def do_save(name : String)
+    # Save the current document to `name`. Returns true on success, false on failure
+    # (statusbar warning). The on-disk file and the in-memory document are left intact
+    # on any failure. Public so the file lifecycle is testable without driving dialogs.
+    def save_document(name : String) : Bool
+        data = serialize_document # in memory first: a serialization failure never touches the disk
+        tmp = "#{name}.tmp.#{Process.pid}"
         begin
-            h = File.new(name, "wb")
-            h.write(@persistency.save)
-            h.close
-            @filename = name
-            set_statusbar_info("Saved as #{@filename}")
-            @last_save_version = @persistency.version
+            File.open(tmp, "wb") do |h|
+                h.write(data)
+                h.flush; h.fsync # durable on disk before the rename replaces the good file
+            end
+            File.rename(tmp, name) # atomic replace (POSIX rename / Windows MoveFileEx REPLACE_EXISTING)
         rescue ex
-            set_statusbar_warning("Couldn't save #{@filename}")
+            File.delete(tmp) if File.exists?(tmp) # best-effort: never leave a stray temp behind
+            raise ex
         end
+        @filename = name
+        @last_save_version = @persistency.version
+        set_statusbar_info("Saved #{name}")
+        true
+    rescue ex
+        set_statusbar_warning("Couldn't save #{name} — #{file_error_cause(ex)}; the previous version on disk is untouched")
+        false
+    end
+
+    # The serialize step, named so the save path is testable (Persistency itself can't be
+    # subclassed to fail — it is a JSON::Serializable root class).
+    private def serialize_document : Bytes
+        @persistency.save
+    end
+
+    # Map a file-operation exception to a short, user-facing cause — never a Crystal class name,
+    # API detail ("mode 'rb'"), or an internal path. Raw detail goes to stderr for debugging.
+    private def file_error_cause(ex : Exception) : String
+        case ex
+        when File::NotFoundError     then "file not found"
+        when File::AccessDeniedError then "permission denied"
+        when File::Error             then "couldn't access the file"
+        when ConditionsNotMet        then ex.message || "invalid file" # ConditionsNotMet messages are author-written + clean
+        else
+            STDERR.puts("file op error: #{ex.class}: #{ex.message}")
+            "unexpected error"
+        end
+    end
+
+    private def do_save(name : String)
+        save_document(name)
         request_rebuild
     end
 
@@ -71,8 +106,8 @@ class EmbraceApp < CrymbleUI::App
     private def do_newfile_empty_impl
         @filename = nil
         @persistency = Persistency::Default.new
-        table_lid = @persistency.add_table(Constant::Unnamed)
-        @persistency.add_field(table_lid, Constant::Unnamed)
+        table_lid = @persistency.add_table("") # truth: un-named; displays as "(unnamed)" via display_name
+        @persistency.add_field(table_lid, "")
         @persistency.add_record(table_lid)
         @last_save_version = @persistency.version
     end
@@ -162,30 +197,61 @@ class EmbraceApp < CrymbleUI::App
         end
     end
 
+    # Load a document from `name`, replacing the current one. Returns true on success;
+    # on failure returns false (statusbar warning) leaving the in-memory document and
+    # @filename untouched. Public so the file lifecycle is testable without driving dialogs.
+    def load_document(name : String) : Bool
+        data = File.open(name, "rb", &.getb_to_end)
+        # Parse into a SCRATCH persistency; commit to @persistency only once it fully succeeds, so a
+        # failure leaves the current document (and the still-good on-disk file it names) untouched.
+        fresh = Persistency::Default.new
+        fresh.load(data)
+        if leaf = fresh.get_ordered_commit_leaves.last?
+            fresh.context.current_commit = leaf # set the leaf on FRESH before shape_add clones its context
+        end
+        @persistency = fresh
+        @last_save_version = @persistency.version
+        @shapes.clear
+        shape_add
+        @filename = name
+        set_statusbar_info("Loaded #{name}")
+        true
+    rescue ex
+        set_statusbar_warning("Couldn't load #{name} — #{file_error_cause(ex)}")
+        false
+    end
+
     private def do_load
         dialog = Dialogs::DirBrowser.new("Load file...", "*.embrace") do |name|
             protect_unsaved_changes("load '#{name}'") do
-                begin
-                    h = File.new(name, "rb")
-                    @persistency = Persistency::Default.new
-                    @persistency.load(h.getb_to_end)
-                    h.close
-                    leaves = @persistency.get_ordered_commit_leaves
-                    if leaf = leaves.last?
-                        @persistency.context.current_commit = leaf
-                    end
-                    @last_save_version = @persistency.version
-                    @shapes.clear
-                    shape_add
-                    @filename = name
-                    set_statusbar_info("Loaded #{@filename}")
-                rescue ex
-                    set_statusbar_warning("Couldn't load #{name}")
-                end
+                load_document(name)
                 request_rebuild
             end
         end
         add_dialog(dialog)
+    end
+
+    # Import an xlsx table into `shape`'s persistency as a new Shape. Returns true on
+    # success; on failure returns false leaving the document and context stack untouched.
+    def import_document(shape : ShapeState, filename : String, tablename : String) : Bool
+        # Push a THROWAWAY context dup: Persistency#import wraps its mutations in a transaction that
+        # rolls back the data, but NOT the top Context object (close_and_add_commit mutates it in
+        # place). The dup absorbs that and is discarded by the ensure-pop below, so the shape's own
+        # context is never left pointing at a rolled-back commit.
+        shape.persistency.contexts.push(shape.context.dup)
+        begin
+            table_lid = shape.persistency.import(filename, tablename)
+            new_shape = ShapeState.new("Shape", shape.persistency, shape.persistency.context, table_lid)
+            @shapes << new_shape # reads the still-pushed context → must precede the pop
+            n = shape.persistency.get_record_lids(table_lid).size
+            set_statusbar_info("Imported \"#{tablename}\" (#{n} records) from #{filename}")
+            true
+        rescue ex
+            set_statusbar_warning("Couldn't import #{filename} — #{file_error_cause(ex)}; nothing was added")
+            false
+        ensure
+            shape.persistency.contexts.pop
+        end
     end
 
     private def do_quit

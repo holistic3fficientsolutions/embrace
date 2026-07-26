@@ -138,7 +138,7 @@ class EmbraceApp < CrymbleUI::App
                     dialog.persistency.contexts.push(dialog.context)
                     table = dialog.persistency.get_table(MetaFieldLIDs::TableLastTable)
                     table.sort! { |x, y| x[2].as(String) <=> y[2].as(String) }
-                    table_names = ["(no reference)"] + table.map(&.[2].as(String))
+                    table_names = ["(no reference)"] + table.map { |row| dialog.persistency.display_name(row[0].as(Persistency::TableLID)) } # blank -> "(unnamed)"
                     table_lids = [nil.as(Persistency::TableLID?)] + table.map(&.[0].as(Persistency::TableLID?))
                     ref_table_idx = table_lids.index(dialog.ref_table_lid) || 0
 
@@ -158,7 +158,7 @@ class EmbraceApp < CrymbleUI::App
 
                     if rtl = dialog.ref_table_lid
                         field_lids = dialog.persistency.get_field_lids(rtl)
-                        field_names = field_lids.map { |fl| dialog.persistency.get_value(MetaFieldLIDs::Names, fl).as(String) }
+                        field_names = field_lids.map { |fl| dialog.persistency.display_name(fl) } # blank -> "(unnamed)"
                         field_idx = dialog.ref_field_lid ? (field_lids.index(dialog.ref_field_lid) || 0) : 0
 
                         hstack(spacing: 5.0) do
@@ -287,7 +287,7 @@ class EmbraceApp < CrymbleUI::App
             register_shortcut("Escape") { dialog.close; request_rebuild }
             vstack(spacing: 10.0, padding: 10.0) do
                 add_field_proc = ->(target : Symbol) {
-                    table_name = dialog.configurator.persistency.get_value(MetaFieldLIDs::Names, dialog.table_lid).as(String)
+                    table_name = dialog.configurator.persistency.display_name(dialog.table_lid) # blank -> "(unnamed)"
                     add_dlg = Dialogs::AddField.new("Add new field to '#{table_name}'",
                         dialog.configurator.persistency, dialog.context, suppress_reference: true) do |name, ref_field_lid|
                         new_lid = dialog.configurator.persistency.add_field(dialog.table_lid, name, ref_field_lid)

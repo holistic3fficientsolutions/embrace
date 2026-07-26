@@ -62,24 +62,31 @@ permissions).
 
 ### File I/O in the GUI
 
-In `src/gui/embrace.cr`:
+In `src/gui/embrace_file_ops.cr`. The three lifecycle operations are **atomic-or-no-op**: a
+failure leaves both the on-disk file and the in-memory document exactly as they were.
 
 | Method | Action |
 |--------|--------|
-| `do_save(name)` | Write `@persistency.save` bytes to file |
-| `do_save_as()` | Open DirBrowser dialog with `*.embrace` wildcard |
-| `do_load()` | Open DirBrowser, read file, call `@persistency.load(data)` |
-| `do_newfile_empty()` | New persistency with one table, one field, one record |
-| `do_newfile_demo()` | New persistency with demo dataset (Cities, Times, Projects, Persons, Allocations) |
+| `save_document(name) : Bool` | Serialize to memory first, write a sibling temp file, `fsync`, then atomically `rename` it over the target — so a serialization or write failure never damages the file already on disk. |
+| `load_document(name) : Bool` | Parse into a **scratch** persistency; swap it in only on full success — so a failed load leaves the current document (and the good file it names) untouched, never a half-loaded/empty split-brain. |
+| `import_document(shape, file, table) : Bool` | Import wrapped in a `transaction`; a failed import adds nothing (no half-table) and leaks no context frame. |
+| `do_save` / `do_save_as` / `do_load` | Thin dialog wrappers over the above; `do_load` also gates on `protect_unsaved_changes`. |
+| `do_newfile_empty` / `do_newfile_demo` | New persistency (empty / demo dataset). |
+
+Failures report a short, user-facing cause via `file_error_cause` (never a Crystal exception class
+name or an internal path); the raw exception goes to stderr for debugging.
 
 ## XLSX Import
 
 Implementation: `Generic::ImExport(T)` mixin in `src/persistency.cr`.
 Uses `xlsx-parser` shard.
 
-`import(file, tablename)`:
+`import(file, tablename)` — requires a **header row plus at least one data row**; the header cells
+must be **text**, and no data row may be wider than the header. The whole import runs inside a
+`transaction`, so any violation (or a mid-file error) rolls the entire table back — a failed import
+leaves the document unchanged.
 1. Read the XLSX file with `XlsxParser::Book`
-2. First row → field names (creates fields via `add_field`)
+2. First row → field names (creates fields via `add_field`; non-text header cell → error)
 3. Subsequent rows → records (creates records, sets cell values)
 4. Type conversion:
    - `Time` → `nil` (not supported)

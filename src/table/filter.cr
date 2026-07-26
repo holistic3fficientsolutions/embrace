@@ -196,6 +196,7 @@ module Table::Lazy::Filter
             end
         end
 
+
         protected def multiassign_begin
             @raw.multiassign_begin
         end

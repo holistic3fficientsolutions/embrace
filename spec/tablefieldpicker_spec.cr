@@ -1,6 +1,7 @@
 require "spec"
 require "../spec/spec_helper"
 require "../src/global"
+require "../src/constants"
 require "../src/virtualtable"
 require "../src/gui/tablefieldpicker"
 
@@ -54,5 +55,22 @@ describe GUI::Widget::TablePicker do
         # Picker should now be on the new table, not the old one
         picker.names[picker.lid_index].should eq("Brand New")
         picker.lid.should_not be_nil
+    end
+
+    it "displays a blank-named table as (unnamed), never a raw empty string" do
+        # T-071 keeps storage truthful (a never-named table stores ""); every display surface — the
+        # "Table:" dropdown included — must read through display_name so the blank reads as the
+        # "(unnamed)" placeholder, not "" (which the ComboBox shows as a bare "»").
+        p = Persistency::Default.new
+        ctx = p.context.clone
+        p.contexts.push(ctx)
+        p.add_table("") # un-named table, stored truthfully as ""
+        ctx = p.contexts.pop
+
+        picker = GUI::Widget::TablePicker.new(p, ctx, allow_create: true, suppress_empty: true, prefill_table: true)
+
+        picker.names.should contain(Constant::Unnamed)
+        picker.names.should_not contain("")
+        picker.names[picker.lid_index].should eq(Constant::Unnamed) # the collapsed dropdown value too
     end
 end

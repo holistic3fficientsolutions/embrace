@@ -96,8 +96,9 @@ pivot's structure. The gate is what fires `matrix_adapter.invalidate_all!` — t
 signal that makes the VirtualMatrix clear its cached content buffer. Without it, a
 structure change that keeps the same grid dimensions (e.g. merged cells splitting after
 a field move) leaves ghost pixels in the vacated separator bands: crymbleui's reconcile
-clear only triggers on a dimension change, and the regression is guarded by
-`spec/gui/fieldlist_move_stale_separator_spec.cr`. It is deliberately the raw memory
+clear is keyed on adapter-instance identity, which embrace holds stable (one adapter
+reused across rebuilds), so it never auto-clears here — the push is required. The
+regression is guarded by `spec/gui/fieldlist_move_stale_separator_spec.cr`. It is deliberately the raw memory
 version, not `Fieldlist#version`, which would pull the VirtualTable's update at gate
 time — before the gate body has repaired the context mid-history-navigation.
 

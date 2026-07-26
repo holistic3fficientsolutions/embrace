@@ -126,6 +126,9 @@ class ContextStack
         context.root_commit = context.root_commit # trigger version increment
         @contexts[-1] = context
     end
+    def size : Int32 # stack depth — used by tests to assert push/pop balance across failures
+        @contexts.size
+    end
 end
 
 # Summary of what's changed in a single commit, grouped per table.
@@ -255,6 +258,16 @@ class Persistency::Backend::Memory(T)
         commit = (commit2rank.keys & commit2value.keys).max_by? {|el| commit2rank[el]}
         commit ? commit2value[commit] : nil # sparse storage, default is nil
     end
+    # The DISPLAY form of a field's or table's name: the stored name, or Constant::Unnamed when
+    # blank/undefined. Storage keeps the TRUTH (a never-named or renamed-to-empty entity stores a
+    # blank name); every display surface (titles, configurator tree, fieldlist, pickers, dialogs,
+    # the changes list) reads through here, so the placeholder is consistent everywhere. Edit
+    # surfaces (rename prefill) deliberately read the RAW name instead — an unnamed entity
+    # prefills an empty box, not the placeholder text.
+    def display_name(lid : FieldLID) : String # FieldLID == TableLID (both are LIDs into Names)
+        name = get_value(MetaFieldLIDs::Names, lid)
+        name.is_a?(String) && !name.empty? ? name : Constant::Unnamed
+    end
     def set_value(field_lid : FieldLID, record_lid : RecordLID, value : T)
         # we must not do a check if the set is invariant at this low level, because it will disrupt the higher level cache (i.e. #set will internally trigger #get with old data)
         # TODO(meta-writes): today meta-field writes (field_lid < 0) land on context.current_commit
@@ -277,8 +290,13 @@ class Persistency::Backend::Memory(T)
         @version += 1
         context.metadata_commit = context.current_commit = lid
     end
-    def transaction(&) : Nil # this is a poor man's transaction
-        safe_state = clone # BTW: this also clones any subclass instance variables (e.g. Cacher); i.e. it is safe
+    def transaction(&) : Nil # poor man's transaction: clone → yield → on raise, restore the clone + re-raise.
+        # Rolls back DATA only. Subclass cache ivars are re-DEFAULTED (empty) by the clone ctor, not
+        # deep-copied — safe because they lazily rebuild. Context OBJECTS and the ContextStack are SHARED
+        # (shallow dup), so context STATE (e.g. current_commit after close_and_add_commit) is NOT rolled
+        # back: a caller that mutates the commit must operate on a throwaway context dup (see #import's
+        # GUI site, import_document).
+        safe_state = clone
         begin
             yield
         rescue ex
@@ -1094,37 +1112,48 @@ module Persistency::Generic::ImExport(T)
     abstract def set_value(field_lid : FieldLID, record_lid : RecordLID, value : T)
     abstract def get_field_lids(table_lid : TableLID) : Array(FieldLID)
     abstract def get_record_lids(table_lid : TableLID) : Array(RecordLID)
+    abstract def transaction(&) : Nil # import rolls back through it on failure
     def import(file : String, tablename : String) : TableLID
         book = XlsxParser::Book.new(file)
-        if book.sheets[0].rows.size >= 2
-            table_lid = add_table(tablename)
-            header = nil
-            field_lids = [] of FieldLID
-            book.sheets[0].rows.each do |row|
-                if header
-                    record_lid = add_record(table_lid)
-                    row.each_value.with_index do |v,i| # {"A1" => 42, "B1" => nil, "C1" => "fourtytwo"}
-                        v = case v
-                        when Time
-                            nil
-                        when Int32
-                            v.to_i64
-                        else
-                            v
+        begin
+            # Precondition BEFORE any mutation: a short/empty sheet gets a typed, honest error instead
+            # of paying for a rollback (and instead of a Nil-assert on the un-added table id).
+            raise ConditionsNotMet.new("needs a header row and at least one data row") unless book.sheets[0]?.try { |s| s.rows.size >= 2 }
+            table_lid = uninitialized TableLID # add_table is the transaction's first, unconditional act
+            # Atomic: any mid-file error (numeric/blank header, row wider than the header, …) rolls the
+            # whole table back so a failed import leaves NO half-table in the document.
+            transaction do
+                table_lid = add_table(tablename)
+                header = nil
+                field_lids = [] of FieldLID
+                book.sheets[0].rows.each do |row|
+                    if header
+                        record_lid = add_record(table_lid)
+                        row.each_value.with_index do |v,i| # {"A1" => 42, "B1" => nil, "C1" => "fourtytwo"}
+                            raise ConditionsNotMet.new("a data row has more cells than the header") if i >= field_lids.size
+                            v = case v
+                            when Time
+                                nil
+                            when Int32
+                                v.to_i64
+                            else
+                                v
+                            end
+                            set_value(field_lids[i], record_lid, v)
                         end
-                        set_value(field_lids[i], record_lid, v)
-                    end
-                else
-                    header = row # {"A1" => 42, "B1" => nil, "C1" => "fourtytwo"}
-                    header.each_value do |v|
-                        field_lid = add_field(table_lid, v.as(String))
-                        field_lids << field_lid
+                    else
+                        header = row # {"A1" => 42, "B1" => nil, "C1" => "fourtytwo"}
+                        header.each_value do |v|
+                            raise ConditionsNotMet.new("header row must be text") unless v.is_a?(String)
+                            field_lids << add_field(table_lid, v)
+                        end
                     end
                 end
             end
+            table_lid
+        ensure
+            book.close # always release the handle (a leaked one keeps the .xlsx locked on Windows)
         end
-        book.close
-        table_lid.not_nil!
     end
     def export(file : String, table_lid : TableLID)
         workbook = Crexcel::Workbook.new(file)
@@ -1175,7 +1204,7 @@ module Persistency::Generic::LoadSave(T)
             io.rewind
             io.getb_to_end
         rescue ex
-            raise ConditionsNotMet.new("Save failed")
+            raise ConditionsNotMet.new("couldn't serialize the document") # user-facing (surfaced via file_error_cause)
         end
     end
     def load(data : Bytes) : Nil
@@ -1184,7 +1213,7 @@ module Persistency::Generic::LoadSave(T)
             json = Compress::Zlib::Reader.new(io).gets_to_end
             replace(self.class.from_json(json)) # only works like this
         rescue ex
-            raise ConditionsNotMet.new("Load failed - format inappropriate")
+            raise ConditionsNotMet.new("invalid or corrupted file") # user-facing (surfaced via file_error_cause)
         end
     end
 end # module Persistency::Generic::LoadSave(T)
