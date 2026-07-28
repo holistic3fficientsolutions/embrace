@@ -199,7 +199,18 @@ ERROR_CODEFILE = "generated-errorcodes.txt" # only used for release builds
         {% system("echo code, file, line > #{ERROR_CODEFILE}") %}
     {% end%}
 {% end %}
-macro assert(invariant, f=__FILE__, l=__LINE__)
+# `*rest` swallows any extra positional argument and makes f/l KEYWORD-ONLY. Both matter because
+# crymble-ui defines its own top-level `assert(condition, "message")`
+# (lib/crymble-ui/src/core/assert.cr) and the two macros compete for every call site. With the old
+# `assert(invariant, f = __FILE__, l = __LINE__)`, a crymble-ui MESSAGE bound to `f` and was echoed
+# into the error-code file below — so any shell metacharacter in a message (e.g. the "(" in
+# layer_renderer's "(h - background capture purity)") failed the shell and killed EVERY --release
+# build of core. Now nothing but __FILE__ can ever reach that echo.
+# Two rejected spellings, both verified: a plain `message = nil` positional makes this signature
+# IDENTICAL to crymble-ui's, so the later definition wins and core's own asserts silently lose their
+# error codes; a bare `*` separator makes the macro require two positional arguments, which breaks
+# every one of core's 1-argument asserts outright.
+macro assert(invariant, *rest, f = __FILE__, l = __LINE__)
     {% if flag?(:release) %}
         # the only way to have "static" compile time variables:
         {% counter = read_file(ERROR_CODEFILE).lines.size %}
@@ -223,10 +234,18 @@ macro assert(invariant, f=__FILE__, l=__LINE__)
         {% if invariant %}
             if {{invariant}} # see https://github.com/crystal-lang/crystal/issues/13209
             else
-                raise("runtime_assert @" + {{f}} + ":{{l}}")
+                {% if rest.size > 0 && rest[0] %}
+                    raise("runtime_assert @" + {{f}} + ":{{l}}: " + {{rest[0]}})
+                {% else %}
+                    raise("runtime_assert @" + {{f}} + ":{{l}}")
+                {% end %}
             end
         {% else %}
-            raise("runtime_assert @" + {{f}} + ":{{l}}")
+            {% if rest.size > 0 && rest[0] %}
+                raise("runtime_assert @" + {{f}} + ":{{l}}: " + {{rest[0]}})
+            {% else %}
+                raise("runtime_assert @" + {{f}} + ":{{l}}")
+            {% end %}
         {% end %}
     {% end %}
 end

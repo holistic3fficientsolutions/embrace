@@ -110,9 +110,13 @@ describe "Filter chips re-flow when the shape panel is resized" do
         flow = chip_flow(app, person_col, shape.id)
         flow.children.size.should be > 5 # precondition: enough chips to wrap
 
-        rows_of = ->{ flow.children.map(&.absolute_bounds.y).uniq.size }
+        # RE-FETCH the flow on every call. A rebuild reconciles into NEW widget instances, so the
+        # captured `flow` above is a stale ORPHAN afterwards — reading it measured the DEAD tree,
+        # which trivially still held its pre-rebuild layout, making the post-rebuild assertion below
+        # vacuous. (`perspective_top` already re-looked-up for this reason.)
+        rows_of = ->{ chip_flow(app, person_col, shape.id).children.map(&.absolute_bounds.y).uniq.size }
         # The chips' OWN bottom, never the filter row's height — that is the stale value that lies.
-        chips_bottom = ->{ flow.children.map(&.absolute_bounds.bottom).max }
+        chips_bottom = ->{ chip_flow(app, person_col, shape.id).children.map(&.absolute_bounds.bottom).max }
         perspective_top = ->{ (app.find("matrix_#{shape.id}") || raise "no matrix section").absolute_bounds.y }
 
         panel = app.find(shape.id) || raise "shape panel not found"
