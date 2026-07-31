@@ -240,6 +240,7 @@ class SimpleMatrixAdapter(T, U, V)
 
     def cell_paint(row : Int32, col : Int32) : CrymbleUI::Widget
         value = cell_read({row, col})
+        CrymbleUI::InputLog.record_paint(row, col, value.to_s) if CrymbleUI::InputLog.enabled?
         header_info = cell_get_header_info({row, col})
         text_color = header_info ? CrymbleUI::Theme.current.ruler_label : nil
         # Header cells adopt the fieldlist class palette (row = green, column =
@@ -410,6 +411,7 @@ class SimpleMatrixAdapter(T, U, V)
             end
             shape.context = @persistency.contexts.pop
             shape.update
+            CrymbleUI::InputLog.record_write(row, col, value) if CrymbleUI::InputLog.enabled?
             invalidate_all!
             @on_data_changed.try &.call
             result

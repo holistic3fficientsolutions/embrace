@@ -116,11 +116,139 @@ class ShapeState
   end
 end
 
+# Expose the REAL demo dataset (File > New demo) rather than hand-cloning its heredoc — core's own
+# T-079 sweep flags drifted fixture clones as a defect, and the whole point of a demo-scale run is to
+# measure what the user actually sees. protect_unsaved_changes yields straight through at startup
+# (@last_save_version == @persistency.version), so no dialog intervenes.
+class EmbraceApp
+  def probe_build_demo
+    do_newfile_demo
+  end
+
+  # do_newfile_demo ends with set_statusbar_info, which schedules a countdown timer — and the
+  # scheduler only exists once the renderer is running, so the fixture build would die on
+  # "Scheduler not initialized". Neutralised for the whole probe run; the statusbar has no bearing
+  # on what is being measured.
+  protected def set_statusbar_info(text : String)
+  end
+
+  protected def set_statusbar_warning(text : String)
+  end
+end
+
 # --- who tells the matrices to re-render? -----------------------------------------------------
 # If a data-unchanged rebuild still re-renders every matrix_content layer WITHOUT this counter
 # moving, the push came from crymble-ui's reconcile, not from embrace's version gate.
 module Probe
   class_property invalidations = 0
+  # EXCLUSIVE per-stage time. The stages nest — Pivot#update reads its parent, which triggers
+  # VirtualTable#update, which calls complex_query — so each hook subtracts whatever nested hooks
+  # consumed inside it. Without that, one edit's cost would be counted three times over.
+  class_property nested_ms = 0.0
+  class_property vt_ms = 0.0
+  class_property vt_calls = 0
+  class_property query_ms = 0.0
+  class_property query_calls = 0
+  class_property query_rows = 0
+  class_property pivot_ms = 0.0
+  class_property pivot_calls = 0
+  class_property version_ms = 0.0
+  class_property version_calls = 0
+  class_property refs_ms = 0.0
+  class_property refs_calls = 0
+  class_property rework_ms = 0.0
+  class_property rework_calls = 0
+  class_property hier_ms = 0.0
+  class_property hier_calls = 0
+  # CUMULATIVE across the whole run (never reset): which source line issues each complex_query, so
+  # "8 calls per shape per rebuild" gets an owner instead of a guess. Independent of the VT hooks —
+  # if sites inside virtualtable.cr appear here, VirtualTable#update demonstrably RAN, and a zero
+  # from the VT hook is the hook's fault rather than the method's.
+  class_property query_sites = Hash(String, Tuple(Int32, Float64)).new
+
+  def self.note_site(site : String, ms : Float64)
+    n, t = @@query_sites[site]? || {0, 0.0}
+    @@query_sites[site] = {n + 1, t + ms}
+  end
+
+  def self.reset_stages
+    @@vt_ms = @@query_ms = @@pivot_ms = @@nested_ms = 0.0
+    @@version_ms = @@refs_ms = @@rework_ms = @@hier_ms = 0.0
+    @@vt_calls = @@query_calls = @@query_rows = @@pivot_calls = 0
+    @@version_calls = @@refs_calls = @@rework_calls = @@hier_calls = 0
+  end
+end
+
+# Timing wrapper with EXCLUSIVE attribution: subtract whatever nested hooks consumed inside.
+macro timed_stage(ms_prop, calls_prop)
+  outer = Probe.nested_ms
+  Probe.nested_ms = 0.0
+  t = Time.instant
+  result = previous_def
+  elapsed = (Time.instant - t).total_milliseconds
+  Probe.{{ms_prop.id}} = Probe.{{ms_prop.id}} + elapsed - Probe.nested_ms
+  Probe.{{calls_prop.id}} = Probe.{{calls_prop.id}} + 1
+  Probe.nested_ms = outer + elapsed
+  result
+end
+
+# The three stages the 20-row baseline could not see. All are LAZY — pulled by the first data
+# access — so a timer on ShapeState#update (the gate) misses every one of them.
+class VirtualTable(T, U)
+  # `update` is PRIVATE and reported 0 calls in the previous run, which is arithmetically impossible
+  # (Hierarchic#update reads @parent.version, and version calls update). Hooking the PUBLIC `version`
+  # alongside it is the discriminator: version fires + update doesn't ⇒ the private override is the
+  # problem; NEITHER fires ⇒ this reopen isn't reaching the type the Shapes actually use.
+  def version : Int32
+    timed_stage(version_ms, version_calls)
+  end
+
+  private def update
+    timed_stage(vt_ms, vt_calls)
+  end
+
+  # The two stages the 1730 ms was attributed to by subtraction. Measured directly now.
+  private def update_references
+    timed_stage(refs_ms, refs_calls)
+  end
+
+  private def update_rework_table
+    timed_stage(rework_ms, rework_calls)
+  end
+end
+
+class Table::Lazy::Pivot::Hierarchic(T, U, V)
+  private def update
+    timed_stage(hier_ms, hier_calls)
+  end
+end
+
+class Table::Lazy::Pivot::Simple(T, U)
+  private def update
+    timed_stage(pivot_ms, pivot_calls)
+  end
+end
+
+module Persistency::Generic::Basics(T)
+  # The signature must match persistency.cr:897 EXACTLY. An untyped `query` param does not override
+  # it — Crystal treats it as a second, less-specific OVERLOAD, so every real call still goes to the
+  # original and the probe reads a silent, plausible-looking zero. (Measured: 0 calls on both
+  # fixtures, when the TablePicker alone guarantees one per shape per rebuild.)
+  def complex_query(query : {table_lids: Array(TableLID), field_lids: Array(Array(FieldLID)), table_joins: Array({Int32, Int32}), where_not_nil_columns: Array(Int32)}, where_not_nil_anding : Bool) : Array(Array(T))
+    outer = Probe.nested_ms
+    Probe.nested_ms = 0.0
+    t = Time.instant
+    res = previous_def
+    elapsed = (Time.instant - t).total_milliseconds
+    Probe.query_ms += elapsed - Probe.nested_ms
+    Probe.query_calls += 1
+    Probe.query_rows += res.size
+    Probe.nested_ms = outer + elapsed
+    # Name the caller. The first frame outside this probe file is the issuing site.
+    site = caller.find { |f| !f.includes?("shape_scaling_perf_autotest") } || "unknown"
+    Probe.note_site(site.split(" in ").first.sub(/^.*\/(?=[a-z_]+\.cr)/, ""), elapsed)
+    res
+  end
 end
 
 class SimpleMatrixAdapter(T, U, V)
@@ -145,7 +273,22 @@ record FrameSample,
   layers : Int32,
   layers_rendered : Int32,
   invalidations : Int32,
-  alloc_mb : Float64
+  alloc_mb : Float64,
+  vt_ms : Float64,
+  vt_calls : Int32,
+  query_ms : Float64,
+  query_calls : Int32,
+  query_rows : Int32,
+  pivot_ms : Float64,
+  pivot_calls : Int32,
+  version_ms : Float64,
+  version_calls : Int32,
+  refs_ms : Float64,
+  refs_calls : Int32,
+  rework_ms : Float64,
+  rework_calls : Int32,
+  hier_ms : Float64,
+  hier_calls : Int32
 
 module CrymbleUI
   module LayerRenderer
@@ -173,14 +316,62 @@ def median(xs : Array(Float64)) : Float64
   s[s.size // 2]
 end
 
-# --- the app, with a small but real table -----------------------------------------------------
+# --- the dataset ------------------------------------------------------------------------------
+# SCALING_ROWS   row count of the table the Shapes open on (default 20 = the committed baseline)
+# SCALING_LINKED 1 = demo-shaped multi-table structure with REFERENCE columns, Shapes opened on the
+#                fact table. A single flat table gives complex_query no join work to do, so the
+#                unlinked fixture under-measures the very stage this run exists to size.
+# SCALING_SHAPES comma list overriding the shape ladder (keeps runtime sane at large row counts)
+# SCALING_FILE   load a real .embrace file instead of generating (Shapes open on its first table)
+ROWS = (ENV["SCALING_ROWS"]? || "20").to_i
+
 app = EmbraceApp.new
-persistency = app.persistency
-hash = Hash(String, FieldLID | TableLID | RecordLID).new
-help = TableReader(Persistency::Default, Persistency::Cell).new(persistency, hash)
-rows = (1..20).map { |i| "a#{i} | b#{i} | c#{i}" }.join("\n")
-help << "T\nA | B | C\n#{rows}"
-t_lid = hash["T"].as(TableLID)
+t_lid = uninitialized TableLID
+
+if ENV["SCALING_DEMO"]? == "1"
+  app.probe_build_demo
+  persistency = app.persistency
+  tables = persistency.get_table(MetaFieldLIDs::TableLastTable) # [lid, _, name]
+  alloc = tables.find { |r| r[2].to_s == "Allocations" }
+  t_lid = (alloc || tables.first)[0].as(TableLID)
+  log("REAL demo dataset (File > New demo): #{tables.size} tables, Shapes on " \
+      "#{(alloc || tables.first)[2]} (3 reference columns)")
+elsif file = ENV["SCALING_FILE"]?
+  raise "SCALING_FILE: could not load #{file}" unless app.load_document(file)
+  persistency = app.persistency
+  tables = persistency.get_table(MetaFieldLIDs::TableLastTable) # same idiom as the TablePicker
+  raise "SCALING_FILE: #{file} has no tables" if tables.empty?
+  t_lid = tables.first[0].as(TableLID)
+  log("loaded #{file}: #{tables.size} tables, opening Shapes on the first")
+else
+  persistency = app.persistency
+  hash = Hash(String, FieldLID | TableLID | RecordLID).new
+  help = TableReader(Persistency::Default, Persistency::Cell).new(persistency, hash)
+  if ENV["SCALING_LINKED"]? == "1"
+    # Demo-shaped: Cities/Times/Projects are dimensions, Persons references Cities, and the fact
+    # table Allocations references three tables — so the join is 4-wide, as in a real model.
+    cities = (1..(Math.max(4, ROWS // 50))).map { |i| "City#{i} | Country#{i % 7}" }.join("\n")
+    projects = (1..(Math.max(4, ROWS // 100))).map { |i| "Project#{i}" }.join("\n")
+    persons = (1..(Math.max(4, ROWS // 10))).map { |i| "Person#{i} | City#{(i % Math.max(4, ROWS // 50)) + 1}" }.join("\n")
+    allocs = (1..ROWS).map do |i|
+      "Person#{(i % Math.max(4, ROWS // 10)) + 1} | Time#{(i % 3) + 1} | " \
+      "Project#{(i % Math.max(4, ROWS // 100)) + 1} | #{i % 100}"
+    end.join("\n")
+    help << "Cities\nCity | Country\n#{cities}"
+    help << "Times\nTime\nTime1\nTime2\nTime3"
+    help << "Projects\nProject\n#{projects}"
+    help << "Persons\nPerson | City_City\n#{persons}"
+    help << "Allocations\nPerson_Person | Time_Time | Project_Project | Allocation\n#{allocs}"
+    t_lid = hash["Allocations"].as(TableLID)
+    log("linked fixture: #{ROWS} allocations over #{Math.max(4, ROWS // 10)} persons / " \
+        "#{Math.max(4, ROWS // 50)} cities / #{Math.max(4, ROWS // 100)} projects")
+  else
+    rows = (1..ROWS).map { |i| "a#{i} | b#{i} | c#{i}" }.join("\n")
+    help << "T\nA | B | C\n#{rows}"
+    t_lid = hash["T"].as(TableLID)
+    log("flat fixture: #{ROWS} rows x 3 columns (NO joins — complex_query has nothing to join)")
+  end
+end
 
 record Rung,
   n : Int32,
@@ -193,7 +384,7 @@ record Rung,
   rss : Float64
 
 class Driver
-  LADDER  = [1, 2, 4, 6, 8, 10, 12, 16]
+  LADDER  = (ENV["SCALING_SHAPES"]? || "1,2,4,6,8,10,12,16").split(",").map(&.to_i)
   WARM    = 4  # discarded frames after a shape-count change (caches settle, first-render pays once)
   MEASURE = 12
 
@@ -223,11 +414,10 @@ class Driver
     LADDER[@rung]
   end
 
-  # Every rung holds exactly n REAL shapes on table T. The app's own start-up Shape is dropped:
-  # it was created against an empty new-file, so it has no table and no matrix — counting it as a
-  # shape made the N=1 rung ~7x cheaper than a real one and faked a superlinear curve.
+  # Every rung holds exactly n shapes on the fixture's table. Any Shape the app made for itself is
+  # dropped in `start` first: the start-up one is built against an empty new-file (no table, no
+  # matrix), and counting it as a shape made the N=1 rung ~7x cheaper and faked a superlinear curve.
   private def grow_to(n : Int32)
-    @app.shapes.clear if @app.shapes.any? { |s| s.matrix_adapter.nil? }
     while @app.shapes.size < n
       @app.shapes << ShapeState.new("T", @persistency, @persistency.context.clone, @t_lid)
     end
@@ -243,8 +433,10 @@ class Driver
     adapter = shape.matrix_adapter
     return nil unless rc && adapter
     rows, cols = adapter.size
-    (0...rows).each do |r|
-      (0...cols).each do |c|
+    # BOUNDED: on a large fixture the grid is huge and every probe pulls a cell through the whole
+    # lazy stack, so an unbounded scan would itself cost more than the frames being measured.
+    (0...Math.min(rows, 60)).each do |r|
+      (0...Math.min(cols, 60)).each do |c|
         next if adapter.cell_get_header_info({r, c})
         if rc.get_assignability([r, c]) == Table::Lazy::Pivot::Assignability::Directly
           return @edit_cell = {r, c}
@@ -295,10 +487,26 @@ class Driver
       layers_rendered: CrymbleUI::LayerRenderer.frame_layers_needing_render,
       invalidations: Probe.invalidations,
       alloc_mb: (total_bytes - @last_total_bytes) / 1_048_576.0,
+      vt_ms: Probe.vt_ms,
+      vt_calls: Probe.vt_calls,
+      query_ms: Probe.query_ms,
+      query_calls: Probe.query_calls,
+      query_rows: Probe.query_rows,
+      pivot_ms: Probe.pivot_ms,
+      pivot_calls: Probe.pivot_calls,
+      version_ms: Probe.version_ms,
+      version_calls: Probe.version_calls,
+      refs_ms: Probe.refs_ms,
+      refs_calls: Probe.refs_calls,
+      rework_ms: Probe.rework_ms,
+      rework_calls: Probe.rework_calls,
+      hier_ms: Probe.hier_ms,
+      hier_calls: Probe.hier_calls,
     )
     @last_total_bytes = total_bytes
     ShapeState.probe_update_reset
     Probe.invalidations = 0
+    Probe.reset_stages
 
     advance(sample)
   end
@@ -412,6 +620,7 @@ class Driver
   end
 
   def start : Nil
+    @app.shapes.clear # drop whatever the app opened for itself; the ladder owns the shape list
     grow_to(target_n)
     @kind = :warm_rebuild
     @count = 0
@@ -446,6 +655,28 @@ class Driver
       median(reb.map(&.alloc_mb)), median(r.edit.map(&.alloc_mb)),
       reb.empty? ? 0 : reb.map(&.invalidations).sort[reb.size // 2],
       r.edit.empty? ? 0 : r.edit.map(&.invalidations).sort[r.edit.size // 2]])
+    # THE DATA STAGES the 20-row baseline could not see. Exclusive ms, so they are additive and
+    # directly comparable with the render/layout buckets above.
+    log("   DATA stages   : rebuild  query %6.1f ms (%3d calls, %6d rows) | VT-rework %6.1f (%4d) | pivot-cluster %6.1f (%5d)" % [
+      median(reb.map(&.query_ms)), reb.empty? ? 0 : reb.map(&.query_calls).sort[reb.size // 2],
+      reb.empty? ? 0 : reb.map(&.query_rows).sort[reb.size // 2],
+      median(reb.map(&.vt_ms)), reb.empty? ? 0 : reb.map(&.vt_calls).sort[reb.size // 2],
+      median(reb.map(&.pivot_ms)),
+      reb.empty? ? 0 : reb.map(&.pivot_calls).sort[reb.size // 2]])
+    log("                 : edit     query %6.1f ms (%3d calls, %6d rows) | VT-rework %6.1f (%4d) | pivot-cluster %6.1f (%5d)" % [
+      median(r.edit.map(&.query_ms)), r.edit.empty? ? 0 : r.edit.map(&.query_calls).sort[r.edit.size // 2],
+      r.edit.empty? ? 0 : r.edit.map(&.query_rows).sort[r.edit.size // 2],
+      median(r.edit.map(&.vt_ms)), r.edit.empty? ? 0 : r.edit.map(&.vt_calls).sort[r.edit.size // 2],
+      median(r.edit.map(&.pivot_ms)),
+      r.edit.empty? ? 0 : r.edit.map(&.pivot_calls).sort[r.edit.size // 2]])
+    log("   VT SPLIT (the VirtualTable hooks DO NOT BIND — these four read 0 regardless; see the")
+    log("                   reopen comment. Hierarchic binds and is real.)")
+    log("                 : rebuild  version %6.1f (%5d) | update %6.1f (%5d) | update_references %7.1f (%3d) | update_rework_table %7.1f (%3d) | Hierarchic %6.1f (%5d)" % [
+      median(reb.map(&.version_ms)), reb.empty? ? 0 : reb.map(&.version_calls).sort[reb.size // 2],
+      median(reb.map(&.vt_ms)), reb.empty? ? 0 : reb.map(&.vt_calls).sort[reb.size // 2],
+      median(reb.map(&.refs_ms)), reb.empty? ? 0 : reb.map(&.refs_calls).sort[reb.size // 2],
+      median(reb.map(&.rework_ms)), reb.empty? ? 0 : reb.map(&.rework_calls).sort[reb.size // 2],
+      median(reb.map(&.hier_ms)), reb.empty? ? 0 : reb.map(&.hier_calls).sort[reb.size // 2]])
     log("")
   end
 
@@ -468,6 +699,11 @@ class Driver
         r.rebuild.empty? ? 0 : r.rebuild.map(&.widgets).sort[r.rebuild.size // 2],
         r.rebuild.empty? ? 0 : r.rebuild.map(&.layers).sort[r.rebuild.size // 2],
         r.tex_mb, r.heap_mb])
+    end
+    log("")
+    log("complex_query CALL SITES (cumulative over the whole run):")
+    Probe.query_sites.to_a.sort_by { |_, v| -v[1] }.each do |site, v|
+      log("   %6d calls  %9.1f ms total   %s" % [v[0], v[1], site])
     end
     log("")
     log("(edit measurement UNAVAILABLE — no directly-assignable cell was found)") if @edit_failed

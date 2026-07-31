@@ -413,7 +413,9 @@ describe "Property-based testing" do
     master_seed = ENV.fetch("PROP_SEED", Time.utc.to_unix.to_s).to_u64
     num_runs = ENV.fetch("PROP_RUNS", "20").to_i
     ops_per_run = ENV.fetch("PROP_OPS", "20").to_i
-    puts "Property test: seed=#{master_seed}, runs=#{num_runs}, ops=#{ops_per_run}"
+    # Seed intentionally NOT announced up front: the failure path below already prints
+    # "Reproduce: PROP_SEED=..." with the exact run seed, so the banner was noise on every
+    # green run and told you nothing you would need unless something failed.
 
     master_rng = Random.new(master_seed)
     num_runs.times do |run|
@@ -441,7 +443,9 @@ describe "Property-based testing" do
     master_seed = ENV.fetch("PIVOT_SEED", Time.utc.to_unix.to_s).to_u64
     num_runs = ENV.fetch("PIVOT_RUNS", "10").to_i
     ops_per_run = ENV.fetch("PIVOT_OPS", "15").to_i
-    puts "Pivot write test: seed=#{master_seed}, runs=#{num_runs}, ops=#{ops_per_run}"
+    # Seed intentionally NOT announced up front: the failure path below already prints
+    # "Reproduce: PROP_SEED=..." with the exact run seed, so the banner was noise on every
+    # green run and told you nothing you would need unless something failed.
 
     # Collect all failures instead of aborting on first
     failures = Array({UInt64, String, String}).new # {run_seed, error_class, summary}
@@ -713,7 +717,9 @@ describe "Property-based testing" do
       end
     end
 
-    puts "Op counts: #{op_counts}" if op_counts.any?
+    # Op-mix census: only interesting when something failed (or when explicitly asked for),
+    # so it no longer prints on a green run.
+    puts "Op counts: #{op_counts}" if op_counts.any? && (!failures.empty? || ENV["SPEC_VERBOSE"]?)
 
     # Report all failures clustered by type
     if !failures.empty?

@@ -102,6 +102,12 @@ private def valid_xlsx : String
   file
 end
 
+# This file injects serialization/IO failures on purpose and asserts the RECOVERY, so embrace's
+# "file op error: ..." diagnostic fires by design. Silenced here only, so a genuine file-op failure
+# in another spec still announces itself.
+Spec.before_each { CrymbleUI::Widget.enable_warnings = false }
+Spec.after_each { CrymbleUI::Widget.enable_warnings = true }
+
 describe "T-072 file lifecycle atomicity" do
   it "T1: a failed load leaves the document intact, so a later save keeps the good file" do
     app = make_app

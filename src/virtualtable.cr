@@ -1099,40 +1099,66 @@ class VirtualTable(T, U) < Table::Lazy::Raw::Base(T)
         @tree.indices.size.times do |col| # TODO(vtable): revisit — this was breaking tests
             tree, field_lid = @tree.indices.bwd(col)
             record_lid_col = @tree.indices[{tree, PseudoFields::RecordLID}]
+            is_reference = !@referencing[field_lid]?.nil?
+            # Hoisted out of the row loop: every term create_reference derives from `col` alone is
+            # column-invariant, and recomputing it per row meant three WeakKeyMap probes (three GC
+            # disappearing-link registrations) per reference cell of the entire table.
+            ref_ctx = is_reference ? reference_column_context(col) : nil
             @table_raw.each_index do |row|
                 record_lid = @table_raw[row][record_lid_col]
                 if record_lid.nil? || record_lid==NilRecord # is the record_lid nil?
                     @table_raw[row][col] = NilRecord
-                elsif @referencing[field_lid]? # are we a reference?
+                elsif is_reference # are we a reference?
                     record_lid_ref = @table_raw[row][col].as(FieldLID|Nil) # we replace the record_lid with...
-                    @table_raw[row][col] = create_reference(col, record_lid_ref) # ... the proper ReferenceCell (or NilRecord)
+                    if ctx = ref_ctx
+                        @table_raw[row][col] = reference_from_context(ctx, record_lid_ref) # ... the proper ReferenceCell
+                    else
+                        @table_raw[row][col] = NilRecord # fully orphaned reference
+                    end
                 end
             end
         end
     end
-    private def create_reference(col : Int32, record_lid_ref : FieldLID?) : ReferenceCell(U)|NilRecordStruct
+    # Everything a ReferenceCell needs that depends on the COLUMN alone. Split out so it can be
+    # resolved once per column instead of once per row. `showall` is why the split exists: each
+    # is_expanded?/is_selected? is a WeakKeyMap probe, and EVERY probe allocates a Key wrapping a
+    # WeakRef — i.e. registers a GC disappearing link, which the collector must then process on every
+    # subsequent mark. #update_rework_table rebuilds every reference cell of the WHOLE table on every
+    # VirtualTable#update, so doing this per ROW cost three such registrations per cell.
+    # Returns nil for a fully orphaned reference; callers turn that into NilRecord.
+    private def reference_column_context(col : Int32)
         node, field = @tree.indices.bwd(col)
         referenced_field_lid = @referencing[field.as(FieldLID)]
+        entry = @references[referenced_field_lid]
+        return nil if entry.nil?
+        record2rank, rank2value = entry
+        # showall is true if the referencing field points to a table that has ShowAll set (double meaning of ShowAll)
+        showall = @tree.configurator.is_expanded?(node[field]) &&
+            @tree.configurator.is_expanded?(node[field][referenced_field_lid]) &&
+            (@tree.configurator.is_selected?(node[field][referenced_field_lid][PseudoFields::ShowAll]) != false)
+        # Both are structs, so sharing them across the column's rows is a value copy — identical to
+        # constructing one per row, minus the construction.
+        {record2rank, rank2value, showall,
+         ReferenceModifier(T,U).new(self, referenced_field_lid.as(FieldLID)),
+         ReferenceConstrainer(T,U).new(self, col)}
+    end
 
-        if @references[referenced_field_lid].nil?
-            # we return NilRecord in case of a fully orphaned reference!
-            NilRecord
+    # The per-ROW remainder: only the rank depends on which record the cell holds.
+    private def reference_from_context(ctx, record_lid_ref : FieldLID?) : ReferenceCell(U)
+        record2rank, rank2value, showall, modifier, constrainer = ctx
+        if record_lid_ref.nil?
+            rank = nil
         else
-            record2rank, rank2value = @references[referenced_field_lid].not_nil!
-            # showall is true if the referencing field points to a table that has ShowAll set (double meaning of ShowAll)
-            showall = @tree.configurator.is_expanded?(node[field]) &&
-                @tree.configurator.is_expanded?(node[field][referenced_field_lid]) &&
-                (@tree.configurator.is_selected?(node[field][referenced_field_lid][PseudoFields::ShowAll]) != false)
-            if record_lid_ref.nil?
-                rank = nil
-            else
-                rank = record2rank[record_lid_ref]? # #[]? because we could have a (locally) orphaned reference
-            end
-            rank = 0 if rank.nil? # ReferenceCell's rank==0 stands for "(no reference)"
-            modifier = ReferenceModifier(T,U).new(self, referenced_field_lid.as(FieldLID))
-            constrainer = ReferenceConstrainer(T,U).new(self, col)
-            ReferenceCell(U).new(rank, showall, rank2value, modifier, constrainer)
+            rank = record2rank[record_lid_ref]? # #[]? because we could have a (locally) orphaned reference
         end
+        rank = 0 if rank.nil? # ReferenceCell's rank==0 stands for "(no reference)"
+        ReferenceCell(U).new(rank, showall, rank2value, modifier, constrainer)
+    end
+
+    private def create_reference(col : Int32, record_lid_ref : FieldLID?) : ReferenceCell(U)|NilRecordStruct
+        ctx = reference_column_context(col)
+        return NilRecord if ctx.nil? # we return NilRecord in case of a fully orphaned reference!
+        reference_from_context(ctx, record_lid_ref)
     end
     private def raw_assignment(index : Index, value : T, dryrun = false) : Nil
         row, col = index[0], @tree.user_columns[index[1]]

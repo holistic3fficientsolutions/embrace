@@ -5,6 +5,10 @@ require "../../src/debug-helper"
 require "../../src/constants"
 require "crymble-ui/testing/test_renderer"
 
+# Measurement output, not assertions — these lines told a full-suite run nothing and buried the
+# dots. Set SPEC_VERBOSE=1 when you actually want the numbers.
+PERF_VERBOSE = !ENV["SPEC_VERBOSE"]?.nil?
+
 include Persistency
 
 # T-007: count get_value CALLS to make the diff-Shape construction budgets
@@ -152,7 +156,7 @@ describe "diff-Shape performance — failing baseline vs dup_shape" do
         reads_small = reads_for(make_parent_shape[0]) { |p| p.dup_shape("copy") }
         reads_big = reads_for(make_large_parent_shape(500)[0]) { |p| p.dup_shape("copy") }
         ratio = reads_big.to_f / {reads_small, 1}.max
-        puts "    [det 1] dup reads: 5-rec=#{reads_small} / 500-rec=#{reads_big} / ratio=#{ratio.round(1)}×"
+        puts "    [det 1] dup reads: 5-rec=#{reads_small} / 500-rec=#{reads_big} / ratio=#{ratio.round(1)}×" if PERF_VERBOSE
         ratio.should be <= 2.0,
             "dup_shape reads scaled #{ratio.round(1)}× from 5→500 records (#{reads_small}→#{reads_big}); the clone fast path must stay O(1) — a record-walk crept in"
     end
@@ -166,7 +170,7 @@ describe "diff-Shape performance — failing baseline vs dup_shape" do
         t_dup = median_ms_3(setup) { |p| p.dup_shape("copy") }
         t_diff = median_ms_3(setup) { |p| p.spawn_diff_shape }
         ratio = t_diff / {t_dup, 0.01}.max
-        puts "    [perf 1] dup = #{t_dup.round(2)}ms / diff = #{t_diff.round(2)}ms / ratio = #{ratio.round(1)}×"
+        puts "    [perf 1] dup = #{t_dup.round(2)}ms / diff = #{t_diff.round(2)}ms / ratio = #{ratio.round(1)}×" if PERF_VERBOSE
         ratio.should be < 15.0,
             "spawn_diff_shape took #{t_diff.round(2)}ms vs dup_shape #{t_dup.round(2)}ms — #{ratio.round(1)}× slower (budget: 15×)"
     end
@@ -181,7 +185,7 @@ describe "diff-Shape performance — failing baseline vs dup_shape" do
         reads_small = reads_for(make_parent_shape[0]) { |p| p.spawn_diff_shape }
         reads_big = reads_for(make_large_parent_shape(500)[0]) { |p| p.spawn_diff_shape }
         ratio = reads_big.to_f / {reads_small, 1}.max
-        puts "    [det 2] spawn_diff reads: 5-rec=#{reads_small} / 500-rec=#{reads_big} / ratio=#{ratio.round(1)}×"
+        puts "    [det 2] spawn_diff reads: 5-rec=#{reads_small} / 500-rec=#{reads_big} / ratio=#{ratio.round(1)}×" if PERF_VERBOSE
         ratio.should be < 50.0,
             "spawn_diff_shape reads scaled #{ratio.round(1)}× from 5→500 records (#{reads_small}→#{reads_big}); linear is ~23×, a quadratic re-walk would be ~5900× (budget: 50×)"
     end
@@ -194,7 +198,7 @@ describe "diff-Shape performance — failing baseline vs dup_shape" do
         small = median_ms_3(-> { make_parent_shape[0] }) { |p| p.spawn_diff_shape }
         big = median_ms_3(-> { make_large_parent_shape(500)[0] }) { |p| p.spawn_diff_shape }
         ratio = big / {small, 0.01}.max
-        puts "    [perf 5] small(5) = #{small.round(2)}ms / big(500) = #{big.round(2)}ms / ratio = #{ratio.round(1)}×"
+        puts "    [perf 5] small(5) = #{small.round(2)}ms / big(500) = #{big.round(2)}ms / ratio = #{ratio.round(1)}×" if PERF_VERBOSE
         ratio.should be < 200.0,
             "scaling 5→500 records inflates spawn_diff_shape by #{ratio.round(1)}× (budget: 200×; linear-with-build-overhead ~50-80× is expected, quadratic would be >1000×)"
     end
@@ -213,9 +217,9 @@ describe "diff-Shape performance — failing baseline vs dup_shape" do
         diff_size = diff_rc ? diff_rc.size : [0, 0]
         dup_cells = dup_size[0] * dup_size[1]
         diff_cells = diff_size[0] * diff_size[1]
-        puts "    [perf 6d] dup matrix = #{dup_size.inspect} (#{dup_cells} cells)"
-        puts "    [perf 6d] diff matrix = #{diff_size.inspect} (#{diff_cells} cells)"
-        puts "    [perf 6d] parent filter_state.size dup=#{dup.filter_state.size} diff=#{diff.filter_state.size}"
+        puts "    [perf 6d] dup matrix = #{dup_size.inspect} (#{dup_cells} cells)" if PERF_VERBOSE
+        puts "    [perf 6d] diff matrix = #{diff_size.inspect} (#{diff_cells} cells)" if PERF_VERBOSE
+        puts "    [perf 6d] parent filter_state.size dup=#{dup.filter_state.size} diff=#{diff.filter_state.size}" if PERF_VERBOSE
     end
 
     # 6c. Count the number of render frames each path needs to fully settle.
@@ -248,7 +252,7 @@ describe "diff-Shape performance — failing baseline vs dup_shape" do
                 prev_primitives = cur
                 frames += 1
             end
-            puts "    [perf 6c/#{mode}] settled after #{frames} frames, total=#{total_time.round(1)}ms"
+            puts "    [perf 6c/#{mode}] settled after #{frames} frames, total=#{total_time.round(1)}ms" if PERF_VERBOSE
         end
     end
 
@@ -303,9 +307,9 @@ describe "diff-Shape performance — failing baseline vs dup_shape" do
         # Decompose each first-frame delta: rebuild-only vs new-shape-incremental.
         dup_delta = t_dup_first_frame - t_rebuild_only
         diff_delta = t_diff_first_frame - t_rebuild_only
-        puts "    [perf 6b] steady=#{t_steady.round(1)}ms  rebuild_only=#{t_rebuild_only.round(1)}ms"
-        puts "    [perf 6b] spawn_dup=#{t_dup_spawn.round(2)}ms  first_frame_+dup=#{t_dup_first_frame.round(1)}ms  (Δ_new_shape=#{dup_delta.round(1)}ms)"
-        puts "    [perf 6b] spawn_diff=#{t_diff_spawn.round(2)}ms  first_frame_+diff=#{t_diff_first_frame.round(1)}ms  (Δ_new_shape=#{diff_delta.round(1)}ms)"
+        puts "    [perf 6b] steady=#{t_steady.round(1)}ms  rebuild_only=#{t_rebuild_only.round(1)}ms" if PERF_VERBOSE
+        puts "    [perf 6b] spawn_dup=#{t_dup_spawn.round(2)}ms  first_frame_+dup=#{t_dup_first_frame.round(1)}ms  (Δ_new_shape=#{dup_delta.round(1)}ms)" if PERF_VERBOSE
+        puts "    [perf 6b] spawn_diff=#{t_diff_spawn.round(2)}ms  first_frame_+diff=#{t_diff_first_frame.round(1)}ms  (Δ_new_shape=#{diff_delta.round(1)}ms)" if PERF_VERBOSE
         # Diagnostic only — don't fail; the prints are the output we want.
     end
 
@@ -352,7 +356,7 @@ describe "diff-Shape performance — failing baseline vs dup_shape" do
         dup_delta = t_dup_first_frame - t_base_a
         diff_delta = t_diff_first_frame - t_base_a
         ratio = diff_delta / {dup_delta.abs, 0.1}.max
-        puts "    [perf 6] base = #{t_base_a.round(2)}ms / +dup = #{t_dup_first_frame.round(2)}ms (Δ#{dup_delta.round(2)}) / +diff = #{t_diff_first_frame.round(2)}ms (Δ#{diff_delta.round(2)}) / ratio = #{ratio.round(1)}×"
+        puts "    [perf 6] base = #{t_base_a.round(2)}ms / +dup = #{t_dup_first_frame.round(2)}ms (Δ#{dup_delta.round(2)}) / +diff = #{t_diff_first_frame.round(2)}ms (Δ#{diff_delta.round(2)}) / ratio = #{ratio.round(1)}×" if PERF_VERBOSE
         ratio.should be < 3.0,
             "first-frame cost of adding diff-Shape is #{ratio.round(1)}× adding a dup-Shape (+dup Δ#{dup_delta.round(2)}ms vs +diff Δ#{diff_delta.round(2)}ms); budget: 3×"
     end
@@ -386,7 +390,7 @@ describe "diff-Shape performance — failing baseline vs dup_shape" do
         t_diff_first = measure_ms { r_b.render_frame(app_b) }
 
         ratio = t_diff_first / {t_dup_first, 1.0}.max
-        puts "    [perf 7] +dup first-frame = #{t_dup_first.round(2)}ms / +diff first-frame = #{t_diff_first.round(2)}ms / ratio = #{ratio.round(2)}×"
+        puts "    [perf 7] +dup first-frame = #{t_dup_first.round(2)}ms / +diff first-frame = #{t_diff_first.round(2)}ms / ratio = #{ratio.round(2)}×" if PERF_VERBOSE
         ratio.should be < 1.5,
             "first-frame render +diff (#{t_diff_first.round(2)}ms) is #{ratio.round(2)}× +dup (#{t_dup_first.round(2)}ms); budget: 1.5× — quadratic regression would be ~2×"
     end

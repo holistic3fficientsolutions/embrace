@@ -37,14 +37,15 @@ end
 
 describe "embrace rebuild cost audit" do
   it "prints widgets-per-rebuild scaling with rows and shapes" do
-    puts "\n=== embrace full-rebuild cost (widgets reconstructed per request_rebuild) ==="
+    verbose = !ENV["SPEC_VERBOSE"]?.nil? # measurement output; silent unless asked for
+    puts "\n=== embrace full-rebuild cost (widgets reconstructed per request_rebuild) ===" if verbose
     [{5, 1}, {20, 1}, {5, 2}, {20, 2}, {50, 1}].each do |cfg|
       rows, shapes = cfg
       app = make_app(rows, shapes)
       renderer = CrymbleUI::Testing::TestRenderer.new(1200, 800)
       renderer.settle_rendering(app)
       total = count_widgets(app.root.not_nil!)
-      puts "  rows=#{rows} shapes=#{shapes} -> build_count=#{app.build_count} widgets_per_tree=#{total}"
+      puts "  rows=#{rows} shapes=#{shapes} -> build_count=#{app.build_count} widgets_per_tree=#{total}" if verbose
     end
     true.should be_true
   end
@@ -57,7 +58,7 @@ describe "embrace rebuild cost audit" do
     app.request_rebuild
     renderer.render_frame(app)
     widgets = count_widgets(app.root.not_nil!)
-    puts "\n  one request_rebuild -> #{app.build_count - before} build() reconstructing #{widgets} widgets"
+    puts "\n  one request_rebuild -> #{app.build_count - before} build() reconstructing #{widgets} widgets" if !ENV["SPEC_VERBOSE"]?.nil?
     # Filter search fires this per keystroke (embrace.cr:966); cell entry per committed
     # cell (embrace.cr:395) — so the per-event cost is one full build() of this magnitude.
     (app.build_count - before).should eq 1

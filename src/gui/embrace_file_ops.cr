@@ -76,7 +76,9 @@ class EmbraceApp < CrymbleUI::App
         when File::Error             then "couldn't access the file"
         when ConditionsNotMet        then ex.message || "invalid file" # ConditionsNotMet messages are author-written + clean
         else
-            STDERR.puts("file op error: #{ex.class}: #{ex.message}")
+            # Same switch every other diagnostic uses, so the fault-INJECTION specs (which cause
+            # these on purpose) do not print an alarming line on every green run.
+            STDERR.puts("file op error: #{ex.class}: #{ex.message}") if CrymbleUI::Widget.enable_warnings
             "unexpected error"
         end
     end

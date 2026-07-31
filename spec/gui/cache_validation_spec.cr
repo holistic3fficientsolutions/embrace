@@ -278,7 +278,7 @@ end
 # When the flag isn't set, this spec is a no-op. Print a hint and skip.
 describe "Cache validation — embrace scenarios" do
     it "skipped without -Dcache_validation" do
-        puts "  (compile with -Dcache_validation to enable)"
+        # The example NAME carries the message; printing it as well just breaks up the dots.
     end
 end
 
