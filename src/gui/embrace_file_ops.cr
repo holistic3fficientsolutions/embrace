@@ -244,7 +244,9 @@ class EmbraceApp < CrymbleUI::App
         begin
             table_lid = shape.persistency.import(filename, tablename)
             new_shape = ShapeState.new("Shape", shape.persistency, shape.persistency.context, table_lid)
-            @shapes << new_shape # reads the still-pushed context → must precede the pop
+            # ShapeState.new above reads the still-pushed context — THAT is what must
+            # precede the pop; the array append itself reads nothing.
+            @shapes << new_shape
             n = shape.persistency.get_record_lids(table_lid).size
             set_statusbar_info("Imported \"#{tablename}\" (#{n} records) from #{filename}")
             true
@@ -253,6 +255,91 @@ class EmbraceApp < CrymbleUI::App
             false
         ensure
             shape.persistency.contexts.pop
+        end
+    end
+
+    # === Clipboard ===
+
+    # Put the Shape's rendered grid on the system clipboard as TSV.
+    #
+    # ORDER IS LOAD-BEARING: everything is validated and the whole string built BEFORE
+    # the clipboard is touched, because the failure message promises the clipboard is
+    # unchanged — and a copy overwrites global, cross-application state with no undo.
+    def copy_shape_to_clipboard(shape : ShapeState) : Bool
+        adapter = shape.matrix_adapter
+        raise ConditionsNotMet.new("this Shape has no table picked") unless adapter
+        rows, cols = adapter.size
+        raise ConditionsNotMet.new("this Shape has nothing to copy") if rows == 0 || cols == 0
+        tsv = adapter.to_tsv
+    rescue ex
+        # Only the PREPARATION is guarded by this promise. Everything above runs
+        # before the clipboard is touched, so "unchanged" is guaranteed here.
+        set_statusbar_warning("Couldn't copy — #{file_error_cause(ex)}; the clipboard is unchanged")
+        return false
+    else
+        # The write itself is deliberately OUTSIDE that rescue: if handing the text to
+        # the OS fails, the clipboard's state is unknown, so claiming it is unchanged
+        # would be a lie. Report it as its own case.
+        begin
+            CrymbleUI::Widget.clipboard.text = tsv
+        rescue ex
+            set_statusbar_warning("Couldn't copy — #{file_error_cause(ex)}")
+            return false
+        end
+        set_statusbar_info("Copied #{rows} rows × #{cols} columns to the clipboard")
+        true
+    end
+
+    # Build a new table from clipboard TSV and open a Shape on it.
+    #
+    # Reads @persistency.context rather than a Shape's, so this works with NO Shape
+    # open — which is why it lives on the app menu rather than a Shape's. Otherwise it
+    # mirrors import_document's atomicity: a throwaway context dup absorbs the fact
+    # that a transaction rolls back data but NOT the Context object.
+    def paste_clipboard_as_new_table : Bool
+        text = CrymbleUI::Widget.clipboard.text
+        # ONE emptiness predicate: the real backend returns "" for an empty clipboard,
+        # for no owner AND for a conversion timeout — nil is reachable only in specs.
+        raise ConditionsNotMet.new("nothing on the clipboard") if text.nil? || text.empty?
+        rows = TSV.decode(text) # non-empty text always decodes to at least one row
+        # The codec is policy-free, so the blank policy is applied HERE: pad to the
+        # widest row so every record has the same fields, an absent cell becoming "".
+        width = rows.max_of(&.size)
+        cells = rows.map do |row|
+            Array(Persistency::Cell).new(width) { |i| convert_pasted(row[i]? || "") }
+        end
+        @persistency.contexts.push(@persistency.context.dup)
+        begin
+            table_lid = @persistency.import_rows(cells, "", Array.new(width, ""))
+            new_shape = ShapeState.new("Shape", @persistency, @persistency.context, table_lid)
+            # ShapeState.new above reads the still-pushed context — THAT is what must
+            # precede the pop; the array append itself reads nothing.
+            @shapes << new_shape
+            name = @persistency.display_name(table_lid) # "" stores unnamed; display it as such
+            set_statusbar_info("Pasted as new table \"#{name}\" (#{cells.size} records) — fields are unnamed; " \
+                               "if row 1 holds column names, right-click it and \"Take field names from record\"")
+            true
+        ensure
+            @persistency.contexts.pop
+        end
+    rescue ex
+        set_statusbar_warning("Couldn't paste — #{file_error_cause(ex)}; nothing was added")
+        false
+    end
+
+    # A pasted field is user input, so it goes through the same parser as typing —
+    # `'true` becomes a Bool, "42" an Int64. CellHelper.convert returns a tuple-wrapped
+    # optional over the WIDER cell union, so it needs unwrapping and narrowing; the
+    # narrowing is a `case`, never `.as`, which is a known crash surface against that
+    # recursive union.
+    private def convert_pasted(field : String) : Persistency::Cell
+        converted = CellHelper.convert(field)
+        return field unless converted
+        case value = converted[0]
+        when String, Int64, Float64, Bool, Nil then value
+        else # CellHelper.convert cannot produce anything else; its wider declared
+             # return type is an artifact. Assert rather than silently coping.
+            raise ConditionsNotMet.new("unsupported pasted value")
         end
     end
 

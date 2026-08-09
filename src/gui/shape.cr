@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 require "../global"
+require "../tsv"
 require "../table/pivot"
 require "../table/filter"
 require "../persistency"
@@ -225,12 +226,21 @@ class SimpleMatrixAdapter(T, U, V)
     # Push shape context for all persistency reads/writes.
     # Without this, @matrix_rc reads from the base context which doesn't
     # see commits created by the shape.
+    #
+    # The `ensure` is load-bearing: a raise inside the block used to leave the
+    # ContextStack one frame deeper for the rest of the session, and the write paths
+    # (cell_assign, cell_move) raise ConditionsNotMet by design. It is safe on every
+    # call site because the pop is an identity assignment — ContextStack#push stores
+    # the object itself and nothing writes ContextStack#top=, so restoring on the
+    # raise path cannot adopt a foreign context.
     private def with_shape_context(&)
         if shape = @shape
             @persistency.contexts.push(shape.context)
-            result = yield
-            shape.context = @persistency.contexts.pop
-            result
+            begin
+                yield
+            ensure
+                shape.context = @persistency.contexts.pop
+            end
         else
             yield
         end
@@ -303,12 +313,7 @@ class SimpleMatrixAdapter(T, U, V)
                 CrymbleUI::Text.new("")
             end
         else
-            cell_text = case value
-            when String  then value
-            when Int64   then value.to_s
-            when Float64 then value.to_s
-            else              ""
-            end
+            cell_text = display_string(value) # one source of truth for "what the user sees"
             if bg && text_color
                 CrymbleUI::TextInput.new(value: cell_text, mode: CrymbleUI::TextInputMode::QuickEntry, text_color: text_color, background_color: bg)
             elsif bg
@@ -531,6 +536,52 @@ class SimpleMatrixAdapter(T, U, V)
         with_shape_context { @matrix_rc.hyperplane_get_name(1, index.to_a) }
     end
 
+    # The Shape's rendered grid as TSV — the WHOLE rectangle, exactly as painted:
+    # header bands included, dead intersections included (as empty fields). There is
+    # no header/data discrimination, and that is deliberate: a Shape may be a pivot,
+    # a kanban board or a floor plan, so it has no canonical header row to separate
+    # out, and per-cell filtering would drop a different number of cells from each
+    # row and destroy the column alignment.
+    #
+    # Rulers are excluded — they are regenerable coordinates, not content.
+    #
+    # The context is pushed ONCE around the whole walk rather than per cell: every
+    # read here is lazy and context-dependent, and `size` itself routes through the
+    # same helper, so a per-cell push would repeat the work `size` already needs.
+    # Reads `@matrix_rc` DIRECTLY rather than through `cell_read`: that method is not
+    # a plain accessor — it records every cell it touches in @current_values and arms
+    # the change-highlight deadlines, so exporting through it would mark the whole
+    # grid "seen" and swallow the next real edit's highlight.
+    def to_tsv : String
+        with_shape_context do
+            rows, cols = size
+            TSV.encode(Array.new(rows) { |r| Array.new(cols) { |c| display_string(@matrix_rc[[r, c]]) } })
+        end
+    end
+
+    # What the user sees in a cell, as text. A PURE mapper over an already-read
+    # value — deliberately not an index-taking reader, which would cost a second
+    # pivot read per painted cell on the render path.
+    #
+    # Bool becomes the `'true` / `'false` literal rather than "true"/"false" so it
+    # survives a clipboard round trip: CellHelper.convert only produces a Bool from
+    # the apostrophe form, so plain "true" would come back as a String and silently
+    # strip the column's checkboxes.
+    #
+    # A ReferenceCell recurses on its referenced value rather than calling `.to_s`,
+    # for the same reason: `.value` is a BaseCell, and a Bool-valued reference must
+    # reach the `'true` arm too. The recursion terminates because a
+    # ReferenceCell(BaseCell) cannot nest another ReferenceCell.
+    def display_string(value : T) : String
+        case value
+        when ReferenceCell then display_string(value.value.as(T))
+        when Bool          then value ? "'true" : "'false"
+        when Nil           then ""
+        when NilRecordStruct, NilDeadAreaStruct then "" # no record / dead pivot intersection
+        else                    value.to_s
+        end
+    end
+
     def cell_read(index : {Int32, Int32}) : T
         with_shape_context do
             res = @matrix_rc[index.to_a]
@@ -697,7 +748,7 @@ class FieldlistAdapter
 end
 
 # === Shape State ===
-# Shape holds all business logic state for a database exploration view.
+# Shape holds all business logic state for one editable perspective on the database.
 # Rendering is done by EmbraceApp.build() using CrymbleUI DSL.
 
 class ShapeState
@@ -828,7 +879,7 @@ class ShapeState
         ShapeState.new(newtitle, self)
     end
 
-    # Read-only diff marker. A diff-Shape is a view over the open commit's
+    # Read-only diff marker. A diff-Shape is a perspective on the open commit's
     # pending writes; editing it makes no sense (would write on top of the
     # clamped view and confuse users). SimpleMatrixAdapter consults this.
     @readonly : Bool = false

@@ -1113,44 +1113,61 @@ module Persistency::Generic::ImExport(T)
     abstract def get_field_lids(table_lid : TableLID) : Array(FieldLID)
     abstract def get_record_lids(table_lid : TableLID) : Array(RecordLID)
     abstract def transaction(&) : Nil # import rolls back through it on failure
+    # Build a table from rows that are already parsed and typed.
+    #
+    # `field_names` defines the WIDTH; a row may be SHORTER (its trailing cells are
+    # simply never written, which is what a spreadsheet's short row means) but never
+    # wider. Ragged input is accepted deliberately: padding it here would write an
+    # explicit value where the source had none, and the two callers disagree about
+    # what a blank is — a blank .xlsx cell must stay undefined, a blank TSV field is
+    # the empty string. That policy therefore belongs to each caller, not here.
+    #
+    # Unnamed fields are `""`, the established idiom — display_name renders
+    # "(unnamed)" at read time, so nothing here needs to know about presentation.
+    def import_rows(rows : Array(Array(T)), tablename : String, field_names : Array(String)) : TableLID
+        # Preconditions BEFORE any mutation: an invalid payload costs an honest error
+        # rather than a rollback (and avoids a Nil-assert on the un-added table id).
+        raise ConditionsNotMet.new("needs at least one row and one column") if rows.empty? || field_names.empty?
+        raise ConditionsNotMet.new("a data row has more cells than the header") if rows.any? { |row| row.size > field_names.size }
+        table_lid = uninitialized TableLID # add_table is the transaction's first, unconditional act
+        transaction do
+            table_lid = add_table(tablename)
+            field_lids = field_names.map { |name| add_field(table_lid, name) }
+            rows.each do |row|
+                record_lid = add_record(table_lid)
+                row.each_with_index { |value, i| set_value(field_lids[i], record_lid, value) }
+            end
+        end
+        table_lid
+    end
+
     def import(file : String, tablename : String) : TableLID
         book = XlsxParser::Book.new(file)
         begin
             # Precondition BEFORE any mutation: a short/empty sheet gets a typed, honest error instead
             # of paying for a rollback (and instead of a Nil-assert on the un-added table id).
             raise ConditionsNotMet.new("needs a header row and at least one data row") unless book.sheets[0]?.try { |s| s.rows.size >= 2 }
-            table_lid = uninitialized TableLID # add_table is the transaction's first, unconditional act
-            # Atomic: any mid-file error (numeric/blank header, row wider than the header, …) rolls the
-            # whole table back so a failed import leaves NO half-table in the document.
-            transaction do
-                table_lid = add_table(tablename)
-                header = nil
-                field_lids = [] of FieldLID
-                book.sheets[0].rows.each do |row|
-                    if header
-                        record_lid = add_record(table_lid)
-                        row.each_value.with_index do |v,i| # {"A1" => 42, "B1" => nil, "C1" => "fourtytwo"}
-                            raise ConditionsNotMet.new("a data row has more cells than the header") if i >= field_lids.size
-                            v = case v
-                            when Time
-                                nil
-                            when Int32
-                                v.to_i64
-                            else
-                                v
-                            end
-                            set_value(field_lids[i], record_lid, v)
-                        end
-                    else
-                        header = row # {"A1" => 42, "B1" => nil, "C1" => "fourtytwo"}
-                        header.each_value do |v|
-                            raise ConditionsNotMet.new("header row must be text") unless v.is_a?(String)
-                            field_lids << add_field(table_lid, v)
-                        end
-                    end
+            sheet_rows = book.sheets[0].rows.to_a # materialize once: `first` and the body slice must not consume an iterator
+            # Parse and normalize BEFORE the transaction — a rejected file then mutates
+            # nothing at all, rather than relying on a rollback to undo a half-table.
+            field_names = sheet_rows.first.each_value.to_a.map do |v|
+                raise ConditionsNotMet.new("header row must be text") unless v.is_a?(String)
+                v
+            end
+            # Time is unsupported and Int32 does not exist in Cell (embrace is Int64-only).
+            # Rows stay RAGGED: a short .xlsx row leaves its trailing cells undefined,
+            # which nil-padding would silently turn into written-empty values.
+            rows = sheet_rows[1..].map do |row|
+                row.each_value.to_a.map do |v|
+                    converted = case v
+                                when Time  then nil
+                                when Int32 then v.to_i64
+                                else            v
+                                end
+                    converted.as(T)
                 end
             end
-            table_lid
+            import_rows(rows, tablename, field_names)
         ensure
             book.close # always release the handle (a leaked one keeps the .xlsx locked on Windows)
         end

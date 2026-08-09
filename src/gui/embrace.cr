@@ -203,6 +203,14 @@ class EmbraceApp < CrymbleUI::App
                     menu_item("New file (empty)") { do_newfile_empty }
                     menu_item("New file (demo)") { do_newfile_demo }
                     menu_item("Load file...") { do_load }
+                    # With the creation items, not near Save/Quit: it makes a table.
+                    # Never greyed on an empty clipboard — the clipboard API has no
+                    # cheap "is there anything?" query, so gating this would mean a
+                    # full fetch on every rebuild. Always enabled, warn on click.
+                    menu_item("Paste clipboard as new table", id: "paste_new_table") do
+                        paste_clipboard_as_new_table
+                        request_rebuild
+                    end
                     menu_item("Save file as...") { do_save_as }
                     save_item = menu_item("Save file", "^S") { do_save(@filename.not_nil!) if @filename }
                     save_item.enabled = !@filename.nil?
@@ -457,6 +465,14 @@ class EmbraceApp < CrymbleUI::App
             menubar do
                 menu("Edit") do
                     menu_item("Commit", "^O") { shape.do_commit; set_statusbar_info("Committed"); request_rebuild }
+                    # Scoped id: find_by_id returns the FIRST match, and several Shapes
+                    # can be open. The label names the scope too, because the cell
+                    # context menu already carries an unrelated "Cut cell"/"Paste cell"
+                    # pair that never touches the system clipboard.
+                    menu_item("Copy Shape to clipboard", id: "shape_copy_tsv_#{shape.id}") do
+                        copy_shape_to_clipboard(shape)
+                        request_rebuild
+                    end
                     menu_item("Import table...") do
                         dialog = Dialogs::ImportTable.new("Import table...", "*.xlsx") do |filename, tablename|
                             import_document(shape, filename, tablename)

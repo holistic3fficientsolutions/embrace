@@ -136,7 +136,7 @@ table-level operations through several mixins:
 | Mixin | Purpose |
 |-------|---------|
 | `Generic::Basics` | `add_table`, `add_field`, `add_record`, `remove_*`, `move_*`, `get_table`, `get_field`, `complex_query` |
-| `Generic::ImExport` | XLSX import/export (see [10-file-format](10-file-format.md)) |
+| `Generic::ImExport` | XLSX and clipboard-TSV import/export (see [10-file-format](10-file-format.md)) |
 | `Generic::LoadSave` | AES-encrypted save/load (see [10-file-format](10-file-format.md)) |
 | `Generic::Refactoring` | `factor_out_reference`, `associate_fields`, `dissociate_fields` |
 | `Generic::Branches` | `get_commit_path`, `get_ordered_commit_leaves` |

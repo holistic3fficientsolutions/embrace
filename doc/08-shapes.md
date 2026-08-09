@@ -2,7 +2,7 @@
 
 A Shape is a complete, standalone perspective on the data. Each Shape combines a
 data context, a schema configuration, a fieldlist, and a pivot table into an editable
-view. Multiple Shapes can exist simultaneously, each showing the same underlying data
+perspective. Multiple Shapes can exist simultaneously, each showing the same underlying data
 from a different angle.
 
 ## ShapeState
@@ -35,7 +35,9 @@ Shapes bridge the data model to CrymbleUI widgets through three adapter interfac
 
 | Method | Purpose |
 |--------|---------|
-| `cell_read(index)` | Returns cell value for display |
+| `cell_read(index)` | Returns cell value for display. **Not a pure accessor** — it records every cell it touches in `@current_values` and arms the change-highlight deadlines, so a bulk walk must not use it (`to_tsv` reads `@matrix_rc` directly). Its `String` bridge overload's return is consumed only for change detection, which is why it keeps `to_s` rather than the display mapper: the comparison key carries a reference cell's `rank`, and dropping that would silently stop rank-only changes from highlighting. |
+| `display_string(value)` | The text the user sees, as a pure mapper over an already-read value (a Bool renders as the `'true` literal so it survives a clipboard round trip) |
+| `to_tsv` | The whole rendered rectangle as TSV — see [10-file-format](10-file-format.md) |
 | `cell_assign(index, value)` | Writes cell value back to persistency |
 | `cell_insert(index)` | `hyperplane_add(0, index)` — inserts record |
 | `cell_delete(index)` | `hyperplane_remove(0, index)` — removes record |

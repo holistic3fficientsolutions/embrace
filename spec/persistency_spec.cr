@@ -1116,6 +1116,55 @@ describe Persistency::Default do
     end
 end
 
+describe "Persistency::Generic::ImExport#import_rows" do
+    it "builds a table from parsed rows, with the given field names" do
+        l = Persistency::Default.new
+        table_lid = l.import_rows([["a", 1i64] of Persistency::Cell, ["b", 2i64] of Persistency::Cell], "t", ["Name", "Num"])
+        fields = l.get_field_lids(table_lid)
+        fields.map { |f| l.get_value(Persistency::MetaFieldLIDs::Names, f) }.should eq(["Name", "Num"])
+        records = l.get_record_lids(table_lid)
+        records.map { |r| l.get_value(fields[0], r) }.should eq(["a", "b"])
+    end
+
+    it "stores an empty name for every field when none are given — display_name shows (unnamed)" do
+        l = Persistency::Default.new
+        table_lid = l.import_rows([["x"] of Persistency::Cell], "t", [""])
+        l.display_name(l.get_field_lids(table_lid).first).should eq(Constant::Unnamed)
+    end
+
+    # A SHORT row means "these cells were never written", not "these cells are empty".
+    # Padding it here would write an explicit value where the source had none — which
+    # a diff-Shape would highlight and the commit summary would count. The two callers
+    # disagree about blanks (a blank .xlsx cell stays undefined, a blank TSV field is
+    # ""), so the policy belongs to each caller and this must stay ragged-tolerant.
+    it "leaves a short row's trailing cells UNWRITTEN rather than padding them" do
+        l = Persistency::Default.new
+        table_lid = l.import_rows([["a", "b"] of Persistency::Cell, ["c"] of Persistency::Cell], "t", ["F1", "F2"])
+        fields = l.get_field_lids(table_lid)
+        records = l.get_record_lids(table_lid)
+        l.get_value(fields[1], records[1]).should be_nil                  # undefined, not ""
+        l.cells_written_at(l.context.current_commit).size.should eq(3)    # 3 writes, not 4
+    end
+
+    it "refuses a row wider than the field names, before mutating anything" do
+        l = Persistency::Default.new
+        before = l.get_record_lids(Persistency::MetaFieldLIDs::TableLastTable).size
+        expect_raises(ConditionsNotMet, /more cells than the header/) do
+            l.import_rows([["a", "b"] of Persistency::Cell], "t", ["only_one"])
+        end
+        l.get_record_lids(Persistency::MetaFieldLIDs::TableLastTable).size.should eq(before) # no half-table
+    end
+
+    it "refuses an empty payload before mutating anything" do
+        l = Persistency::Default.new
+        before = l.get_record_lids(Persistency::MetaFieldLIDs::TableLastTable).size
+        expect_raises(ConditionsNotMet, /at least one row and one column/) do
+            l.import_rows([] of Array(Persistency::Cell), "t", ["F1"])
+        end
+        l.get_record_lids(Persistency::MetaFieldLIDs::TableLastTable).size.should eq(before)
+    end
+end
+
 describe "Persistency::Generic::LoadSave (.embrace file format)" do
   it "saves as plain zlib-compressed JSON, not encrypted" do
     l = Persistency::Default.new

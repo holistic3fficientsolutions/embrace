@@ -1,7 +1,8 @@
 # File Format and Import/Export
 
 Embrace persists data to `.embrace` files as zlib-compressed JSON — an open,
-unencrypted format — and supports XLSX import/export for interoperability.
+unencrypted format — and interoperates through XLSX import/export and clipboard (TSV)
+copy/paste.
 
 ## The .embrace File Format
 
@@ -82,18 +83,25 @@ Implementation: `Generic::ImExport(T)` mixin in `src/persistency.cr`.
 Uses `xlsx-parser` shard.
 
 `import(file, tablename)` — requires a **header row plus at least one data row**; the header cells
-must be **text**, and no data row may be wider than the header. The whole import runs inside a
-`transaction`, so any violation (or a mid-file error) rolls the entire table back — a failed import
-leaves the document unchanged.
+must be **text**, and no data row may be wider than the header. A failed import leaves the document
+unchanged.
 1. Read the XLSX file with `XlsxParser::Book`
-2. First row → field names (creates fields via `add_field`; non-text header cell → error)
-3. Subsequent rows → records (creates records, sets cell values)
-4. Type conversion:
-   - `Time` → `nil` (not supported)
-   - `Int32` → `Int64`
-   - `String`, `Float64`, `Bool`, `Nil` → preserved as-is
+2. Parse and validate the whole sheet FIRST — header text check, type normalisation
+   (`Time` → `nil`, `Int32` → `Int64`; `String`/`Float64`/`Bool`/`Nil` preserved). A rejected file
+   therefore never mutates anything, rather than relying on a rollback to undo a half-table.
+3. Hand the parsed rows and the header to `import_rows`, which builds the table inside a
+   `transaction` (defence for a failure during the writes themselves).
+
+Rows stay **ragged**: a short spreadsheet row leaves its trailing cells *undefined*, not empty —
+padding them would write an explicit value where the source had none, which a diff-Shape would
+highlight and the commit summary would count.
 
 Returns the new `TableLID`.
+
+`import_rows(rows, tablename, field_names)` — the shared table-building step, also used by the
+clipboard paste below. `field_names` defines the width (`""` for an unnamed field); a row may be
+shorter but never wider. It is deliberately policy-free about blanks, because its two callers
+disagree: a blank `.xlsx` cell must stay undefined, a blank TSV field is the empty string.
 
 ## XLSX Export
 
@@ -104,6 +112,49 @@ Returns the new `TableLID`.
 4. Type conversion:
    - `true` → `1`, `false` → `0` (XLSX limitation)
    - `Float64`, `Int64`, `String`, `Nil` → preserved
+
+## Clipboard (TSV)
+
+Implementation: `TSV` in `src/tsv.cr`; the walk is `SimpleMatrixAdapter#to_tsv`
+(`src/gui/shape.cr`), the two commands are in `src/gui/embrace_file_ops.cr`.
+
+**Copy Shape to clipboard** puts the Shape's *rendered rectangle* on the system
+clipboard — every cell the user sees, header bands and dead pivot intersections
+included, with no header/data separation. A Shape may be a pivot, a Kanban board or
+a floor plan, so it has no canonical header row to split off; filtering per cell
+would drop a different number of cells from each row and destroy the alignment.
+
+**Paste clipboard as new table** creates a table whose fields are unnamed and opens
+a Shape on it. Where the first row does hold column names, "Take field names from
+record" (cell context menu) promotes them — that operation also *consumes* the row.
+
+Note the asymmetry with XLSX above: `export` writes **table truth with headers**,
+the clipboard carries the **rendered grid without them**.
+
+### Format
+
+Tab-separated, because that is what spreadsheets put on the clipboard: it pastes
+into Calc or Excel cells directly, with no separator dialog and no locale ambiguity
+(a German locale uses `;` for CSV and `,` as the decimal mark). A field is quoted
+iff it contains a tab, a line break or a quote, and an inner quote is doubled — the
+same convention those applications emit and accept, so a cell containing a tab
+survives instead of silently becoming two fields.
+
+### Fidelity — what does NOT round-trip
+
+| Written as | Comes back as |
+|---|---|
+| Bool | Bool — exported as the `'true` / `'false` literal, which `CellHelper.convert` parses back |
+| Reference cell | plain text: the **relation is lost** (it is flattened to the referenced value) |
+| Aggregate cell | plain text of the display artifact (`#5`, `#5/Σ123`), not a value |
+| `"007"` | `Int64 7` — pasted text is parsed like typed input |
+| undefined | the empty string — TSV cannot distinguish "no value" from "empty" |
+| a merged header spanning N columns | its label repeated N times (the screen shows one merged box) |
+| the Rank column | an ordinary data field, beside the new table's own live Rank |
+| field names | **not carried at all** — a detail Shape shows them in the Field List, not in the grid, so a copy of embrace's own Shape never contains a name row |
+
+A non-tabular payload (prose from a browser, a URL) is accepted and becomes a
+one-column table. There is no undo; the recovery is "Delete table".
 
 ## See Also
 

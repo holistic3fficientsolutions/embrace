@@ -29,7 +29,7 @@ every change is a commit you can branch, diff, and travel back through.
   while references and history stay intact.
 - **Low entry barrier.** Start like a spreadsheet; grow into a relational,
   versioned model without a migration project.
-- **Open format & interop.** Native `.embrace` files plus XLSX import/export.
+- **Open format & interop.** Native `.embrace` files, XLSX import/export, and clipboard (TSV) copy/paste.
 - **Local-first & private.** Your data never has to leave your machine. No
   cloud account required.
 
