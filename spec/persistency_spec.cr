@@ -939,7 +939,7 @@ describe Persistency::Default do
         changes[table_a]?.try(&.records_removed).should eq(1)
         changes[table_b]?.try(&.records_removed).should eq(nil)  # untouched
     end
-    it "changes_in_open_commit shows a record move as removed-from-source + added-to-target (T-010)" do
+    it "changes_in_open_commit shows a record move as removed-from-source + added-to-target" do
         l = Persistency::Default.new
         src = l.add_table("src"); sa = l.add_field(src, "a")
         r = l.add_record(src); l.set_value(sa, r, "x")
@@ -954,7 +954,7 @@ describe Persistency::Default do
         changes[src].not_nil!.records_added.should eq(0)
         changes[dst].not_nil!.records_removed.should eq(0)
     end
-    it "changes_in_open_commit attributes a post-move removal to the table the record was in (T-010)" do
+    it "changes_in_open_commit attributes a post-move removal to the table the record was in" do
         l = Persistency::Default.new
         src = l.add_table("src"); l.add_field(src, "a")
         r = l.add_record(src)

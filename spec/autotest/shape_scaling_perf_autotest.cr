@@ -117,7 +117,7 @@ class ShapeState
 end
 
 # Expose the REAL demo dataset (File > New demo) rather than hand-cloning its heredoc — core's own
-# T-079 sweep flags drifted fixture clones as a defect, and the whole point of a demo-scale run is to
+# The sweep flags drifted fixture clones as a defect, and the whole point of a demo-scale run is to
 # measure what the user actually sees. protect_unsaved_changes yields straight through at startup
 # (@last_save_version == @persistency.version), so no dialog intervenes.
 class EmbraceApp

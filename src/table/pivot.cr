@@ -1108,7 +1108,16 @@ class Table::Lazy::Pivot::Hierarchic(T,U,V) < Table::Lazy::Raw::Base(T)
             while (!stack.empty?) && (token[0] <= stack[-1][0])
                 el = stack.pop
                 res << el[2].to_a # first content
-                res << el[1].to_a # then header
+                # ...then the header block, RIGHTMOST/BOTTOMMOST FIRST. Within one level the
+                # leftmost header is the outermost, so it must scroll out last — the same rule
+                # this method already applies BETWEEN levels (see doc/07-pivot-hierarchic.md,
+                # "Scroll Ordering"). It is also what makes the block pinnable: the GUI derives
+                # stickiness from the tail of this order, accepting it only if the trailing run
+                # builds {0..k-1} step by step. Ascending, a two-column block ended [.., 0, 1] —
+                # trailing run {1}, not {0} — so a same-level pair of row headers was reported as
+                # NOT sticky and its spanning group labels scrolled away (field report 2026-09-03,
+                # ab.embrace). Single-column blocks, i.e. every nested level, are unaffected.
+                res << el[1].to_a.reverse
             end
             stack << token
         end

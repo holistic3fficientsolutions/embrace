@@ -26,6 +26,13 @@ class IDContainer(T)
         @hash[key] = value
         value[0]
     end
+    # Read-only iteration over the live keys. `get_id` is the only other lookup and it MUTATES
+    # (inserts on a miss), so a reader that must not disturb the container needs this. Used by
+    # Configurator#columns_are_unreferenced?, where the keys ARE the column paths.
+    # Yields rather than taking a captured block, so a caller can `return` out of it early.
+    def each_entry(& : T, Int32 ->) : Nil
+        @hash.each { |key, value| yield key, value[0] }
+    end
     def clone
         IDContainer(T).new(self)
     end

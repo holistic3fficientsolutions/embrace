@@ -58,7 +58,7 @@ describe GUI::Widget::TablePicker do
     end
 
     it "displays a blank-named table as (unnamed), never a raw empty string" do
-        # T-071 keeps storage truthful (a never-named table stores ""); every display surface — the
+        # The blank-name contract keeps storage truthful (a never-named table stores ""); every display surface — the
         # "Table:" dropdown included — must read through display_name so the blank reads as the
         # "(unnamed)" placeholder, not "" (which the ComboBox shows as a bare "»").
         p = Persistency::Default.new

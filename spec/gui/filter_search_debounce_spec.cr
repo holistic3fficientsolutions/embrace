@@ -6,7 +6,7 @@ require "crymble-ui/testing/test_renderer"
 
 include Persistency
 
-# STOPGAP (embrace T-014 mitigation): typing in a filter's "search…" box must NOT fire a full-app
+# STOPGAP (mitigation): typing in a filter's "search…" box must NOT fire a full-app
 # rebuild per keystroke (~82ms freeze — measured). It's debounced: the chip list narrows once, after
 # typing pauses. This guards the per-keystroke-rebuild elimination — the felt win. (The timer FIRING
 # later isn't asserted: there's no headless scheduler-advance; the "no immediate rebuild" property is

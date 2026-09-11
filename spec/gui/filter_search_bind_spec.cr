@@ -6,7 +6,7 @@ require "crymble-ui/testing/test_renderer"
 
 include Persistency
 
-# T-060: the filter "search…" box is two-way bound (text_input(bind:)) to the per-key Source in
+# The filter "search…" box is two-way bound (text_input(bind:)) to the per-key Source in
 # @filter_search — so the input's cell IS the app's filter-search state. These guard the properties
 # that binding creates (shared cell, per-key independence, persistence across rebuild, Escape-undo)
 # and that the debounce is preserved (see filter_search_debounce_spec).

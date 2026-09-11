@@ -51,6 +51,10 @@ User input is parsed by `CellHelper.convert` in `src/gui/cell.cr`: `"42"` become
 (`" 'true "` → `true`). A selected Bool cell can also be flipped with the Space key (see
 tutorial #2, "space for toggling bools").
 
+A value containing a hard line break is always a `String`, whatever it otherwise looks like:
+`"42\n"` stays text rather than becoming `42i64`. Whitespace tolerance would otherwise throw
+away a break you had just typed, and only on some cells — the rule keeps what you entered.
+
 ## LIDs — Local IDs
 
 Every table, field, record, and commit gets a unique `Int64` identifier called a LID.
@@ -124,7 +128,7 @@ so **`BelongsTo[record]` is no longer write-once**. Inbound references to a move
 collapse to `"(no reference)"` while it is out and resolve again when it is moved back;
 they are *not* healed across the move (see [02-references](02-references.md)). `changes_in_open_commit`
 (the History diff) renders a move faithfully — a removal from the source plus an addition
-to the target, with the cell re-keys suppressed (T-010); the selective-commit router
+to the target, with the cell re-keys suppressed; the selective-commit router
 (`records_with_writes_at`, `table_of`/`float_writes`) still routes a moved record's writes
 by table without special move-awareness (value-preserving, a known refinement).
 

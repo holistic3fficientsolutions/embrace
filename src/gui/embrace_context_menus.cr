@@ -6,7 +6,7 @@
 
 class EmbraceApp < CrymbleUI::App
     def handle_escape : Bool
-        # T-006: Escape also cancels a pending cell cut — passively, so it does
+        # Escape also cancels a pending cell cut — passively, so it does
         # not consume an Escape the focused editor still needs (the renderer
         # routes here before the focused widget). Clearing @cut_cell repaints
         # the highlight off on the next rebuild.

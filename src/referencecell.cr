@@ -7,7 +7,7 @@ require "./global"
 
 # Test-observability: counts ReferenceCell item materializations (each_defined_* iteration steps —
 # the O(referenced_table) cost of enumerating a reference dropdown). The lazy reference dropdown
-# (T-073) builds items only on expand, so painting a COLLAPSED reference cell must add ZERO here.
+# builds items only on expand, so painting a COLLAPSED reference cell must add ZERO here.
 # Reset + read around a single cell_paint to assert the collapse is O(1). Same intent as the
 # render/enumeration counters used elsewhere for headless perf assertions.
 module ReferenceCellStats

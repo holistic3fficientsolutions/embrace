@@ -11,7 +11,7 @@ PERF_VERBOSE = !ENV["SPEC_VERBOSE"]?.nil?
 
 include Persistency
 
-# T-007: count get_value CALLS to make the diff-Shape construction budgets
+# Count get_value CALLS to make the diff-Shape construction budgets
 # DETERMINISTIC (machine-load-independent) instead of absolute wall-clock.
 # Reopened HERE in the spec only — production persistency.cr is byte-for-byte
 # untouched; the counter exists solely in the test binary. (A clean

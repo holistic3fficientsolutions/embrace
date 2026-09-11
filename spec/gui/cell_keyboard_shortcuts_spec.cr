@@ -8,7 +8,7 @@ require "crymble-ui/testing/test_renderer"
 
 include Persistency
 
-# T-006: cell-keyboard ops are embrace-owned, registered as cursor-scoped
+# Cell-keyboard ops are embrace-owned, registered as cursor-scoped
 # panel shortcuts (^X ^V Ins Del ^U ^T) — no longer a crymble-ui CellAction.
 #
 # Headless harness: cell shortcuts route through the real ShortcutManager, NOT
@@ -85,7 +85,7 @@ private def header_cell(adapter) : Tuple(Int32, Int32)
   raise "no header cell"
 end
 
-describe "T-006 cell keyboard shortcuts (embrace-owned)" do
+describe "cell keyboard shortcuts (embrace-owned)" do
   it "Ctrl+T sets the cursor cell to true (restored keyboard shortcut)" do
     sm, adapter, vm, panel = wire_shortcuts(make_items_app)
     rc = find_cell(adapter) { |v| v.to_s == "x" }
@@ -105,7 +105,7 @@ describe "T-006 cell keyboard shortcuts (embrace-owned)" do
   end
 
   # Ctrl+X arms the cut (highlights drag_source_cell); Ctrl+V consumes it,
-  # firing cell_move on the cursor target. We assert the wiring T-006 owns —
+  # firing cell_move on the cursor target. We assert the wiring embrace owns —
   # the cut/paste state machine — not cell_move's relational re-clustering
   # semantics (pre-existing, unchanged by this task).
   it "Ctrl+X arms the cut and Ctrl+V consumes it (cut/paste wiring)" do

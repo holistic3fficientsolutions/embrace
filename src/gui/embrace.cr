@@ -422,7 +422,7 @@ class EmbraceApp < CrymbleUI::App
             register_shortcut("Alt+Left") { shape.navigate_history(-1); request_rebuild }
             register_shortcut("Alt+Right") { shape.navigate_history(1); request_rebuild }
 
-            # Cell-op keyboard shortcuts (T-006): embrace owns the cell-op
+            # Cell-op keyboard shortcuts: embrace owns the cell-op
             # meaning; these fire on the matrix cursor when the editor declines
             # the key (QuickEntry) — see with_cell_cursor. Mirror the cell
             # context-menu handlers; cell_op swallows ConditionsNotMet so a
@@ -501,6 +501,19 @@ class EmbraceApp < CrymbleUI::App
                         @shapes.reject! { |s| !s.open }
                         request_rebuild
                     end
+                    # Scoped id: find_by_id returns the FIRST match and several Shapes can be
+                    # open, so an unscoped id would toggle whichever one happened to build first.
+                    auto_item = menu_item("Auto-size perspective cells",
+                                          checked: shape.auto_size_cells,
+                                          id: "auto_size_cells_#{shape.id}") do
+                        shape.auto_size_cells = !shape.auto_size_cells
+                        # Announce: the matrix carries its computed sizes across a rebuild, so
+                        # without this, unticking would leave them in place.
+                        shape.matrix_adapter.try &.invalidate_all!
+                        request_rebuild
+                    end
+                    auto_item.hover_text = "Size columns and rows to their content — while this is on, they cannot be dragged"
+
                 end
             end
 
@@ -1037,7 +1050,7 @@ class EmbraceApp < CrymbleUI::App
     # Filter-search typing debounce. A rebuild reconstructs the whole app (~82ms — a per-keystroke
     # freeze); the search only narrows the chip list, so coalesce rapid keystrokes into ONE rebuild
     # ~150ms after typing pauses. Mirrors the statusbar timer idiom (cancel pending, reschedule).
-    # STOPGAP until the framework makes a rebuild cheap (crymbleui T-056).
+    # STOPGAP until the framework makes a rebuild cheap.
     private def debounce_filter_search : Nil
         if old = @filter_search_timer_id
             CrymbleUI::Widget.scheduler.cancel(old)
@@ -1072,6 +1085,15 @@ class EmbraceApp < CrymbleUI::App
                         id: "matrix_grid_#{shape.id}",
                     ))
                     shape.matrix_adapter.try &.virtual_matrix = vm.as(CrymbleUI::VirtualMatrix)
+                    # Content sizing and the refusal travel together — offering a drag
+                    # whose result the next re-measure overwrites would be a lie.
+                    vm.as(CrymbleUI::VirtualMatrix).auto_size = shape.auto_size_cells
+                    # NOT `interactive_resize = !auto_size_cells` any more: the refusal is the
+                    # matrix's own, and it is per LINE. A sticky line — embrace's
+                    # record-label column — is never content-sized, so a drag there sticks and is
+                    # offered; a column the mode measures still refuses, because that drag really
+                    # would be overwritten. `interactive_resize` stays what it always was: a hard
+                    # veto for a consumer that wants no resizing at all.
                     # Restore cut highlight from @cut_cell (survives rebuild)
                     if (cc = @cut_cell) && cc[0] == shape.id
                         vm.as(CrymbleUI::VirtualMatrix).drag_source_cell = {cc[1], cc[2]}

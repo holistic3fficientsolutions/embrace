@@ -8,7 +8,7 @@ require "crymble-ui/testing/test_renderer"
 
 include Persistency
 
-# T-073: the reference-cell dropdown is LAZY. Painting a COLLAPSED reference cell shows only the
+# The reference-cell dropdown is LAZY. Painting a COLLAPSED reference cell shows only the
 # referenced value (O(1)); it must NOT enumerate the referenced table — which, across a screenful of
 # reference cells, was O(visible_cells * referenced_table_size) every rebuild. The item list, per-item
 # constraint colours, selection, and per-item rank payloads are produced by the ComboBox's provider
@@ -74,7 +74,7 @@ private def click(app, widget)
   app.handle_mouse_up(c)
 end
 
-describe "reference cell lazy dropdown (T-073)" do
+describe "reference cell lazy dropdown" do
   it "paints the collapsed reference cell WITHOUT enumerating the referenced table" do
     persistency = make_persons_persistency
     shape = persons_shape(persistency)

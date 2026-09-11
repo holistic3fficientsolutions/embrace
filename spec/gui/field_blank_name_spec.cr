@@ -10,7 +10,7 @@ include Persistency
 # and the DISPLAY layer shows "(unnamed)" — from one owner (Persistency#display_name, applied in
 # the configurator's name derivation which feeds the fieldlist / tree / pivot headers).
 #
-# CONTRACT MIGRATION (deliberate, 2026-07): the original T-018 fix normalized at WRITE time
+# CONTRACT MIGRATION (deliberate, 2026-07): the original fix normalized at WRITE time
 # (add_field stored the literal "(unnamed)"), which polluted storage (a deliberately-so-named
 # field became indistinguishable) and leaked blanks through every OTHER write path (rename,
 # table-create). This spec now asserts the read-time contract instead: truthful storage +

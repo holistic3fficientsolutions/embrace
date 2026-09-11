@@ -148,6 +148,7 @@ survives instead of silently becoming two fields.
 | Reference cell | plain text: the **relation is lost** (it is flattened to the referenced value) |
 | Aggregate cell | plain text of the display artifact (`#5`, `#5/Σ123`), not a value |
 | `"007"` | `Int64 7` — pasted text is parsed like typed input |
+| a value with hard line breaks | unchanged — quoted on the way out, kept as text on the way back (a break makes a value a `String`, so `"42\n"` does not become `Int64 42`) |
 | undefined | the empty string — TSV cannot distinguish "no value" from "empty" |
 | a merged header spanning N columns | its label repeated N times (the screen shows one merged box) |
 | the Rank column | an ordinary data field, beside the new table's own live Rank |

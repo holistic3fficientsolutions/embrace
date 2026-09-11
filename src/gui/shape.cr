@@ -246,6 +246,49 @@ class SimpleMatrixAdapter(T, U, V)
         end
     end
 
+    # The size a cell's content wants, for VirtualMatrix#auto_size.
+    #
+    # Overrides the library default, which paints the cell to measure it. Two reasons that is
+    # wrong here: `cell_paint` runs an assignability walk per cell, and it reads through
+    # `cell_read`, which is NOT a plain accessor — it records every cell it touches and arms the
+    # change-highlight deadlines, so measuring the grid through it would mark everything "seen"
+    # and swallow the next real edit's highlight. Reads `@matrix_rc` directly instead, exactly
+    # as `to_tsv` does, and renders through `display_string` so the measured string is the one
+    # the user sees.
+    def cell_natural_size(row : Int32, col : Int32) : NamedTuple(width: Float64, height: Float64, lines: Int32)
+        with_shape_context do
+            value = @matrix_rc[[row, col]]
+            text = display_string(value)
+            font_size = CrymbleUI::FontSizing.calculate_size(0)
+            # Measured the way `cell_paint` PAINTS it — the library default does this by building
+            # the widget and asking it, and this override (which exists to avoid `cell_read`'s
+            # highlight side effects) has to reproduce that discrimination rather than treat every
+            # cell as a TextInput:
+            #
+            #   a reference cell paints a COLLAPSED ComboBox — one line, whatever the value holds
+            #     (doc/08-shapes.md: "contributes its width but not its line count"), and its width
+            #     is the ComboBox's own, which includes the prefix it draws;
+            #   a Bool paints a Checkbox, which reports no content width at all — the library
+            #     default has it vote 0 deliberately, so a Bool column keeps its default width.
+            #
+            # Asked of the widget CLASS, never re-derived here: the chrome belongs to the widget
+            # that paints it, and a copy in embrace would drift the day either changes.
+            case value
+            when ReferenceCell
+                # The ComboBox's own font scale and chrome, not this cell's — asked of the class.
+                {width:  CrymbleUI::ComboBox.content_width_for(text),
+                 height: CrymbleUI::TextInput.content_height_for(text.lines.first? || "", font_size),
+                 lines:  1}
+            when Bool
+                {width: 0.0, height: 0.0, lines: 1}
+            else
+                {width:  CrymbleUI::TextInput.content_width_for(text, font_size),
+                 height: CrymbleUI::TextInput.content_height_for(text, font_size),
+                 lines:  CrymbleUI::TextLines.of(text).line_count}
+            end
+        end
+    end
+
     # === CrymbleUI MatrixAdapter implementation ===
 
     def cell_paint(row : Int32, col : Int32) : CrymbleUI::Widget
@@ -263,7 +306,17 @@ class SimpleMatrixAdapter(T, U, V)
         # cell — a non-assignable dead pivot intersection — reads dimmed, so
         # "nothing goes here" stays visible. Keyed on assignability exactly like
         # v1's matrix#calc_color; a live cell (incl. assignable-but-empty) stays flat.
-        if bg.nil? && header_info.nil? && !cell_has_content?(row, col)
+        # ONE assignability query per painted cell. `get_assignability` is not a lookup — it
+        # walks the pivot tree (two `map_index` calls, each allocating) — and this method asks
+        # two different questions of it: does the cell read as structurally empty, and may its
+        # editor author a line break. Asking twice doubled that walk on every data cell of
+        # every rebuild.
+        assignability = with_shape_context { @matrix_rc.get_assignability([row, col]) }
+        has_content = assignability == Table::Lazy::Pivot::Assignability::Directly ||
+                      assignability == Table::Lazy::Pivot::Assignability::Drilldown
+        accepts_breaks = assignability == Table::Lazy::Pivot::Assignability::Directly ||
+                         assignability == Table::Lazy::Pivot::Assignability::Indirectly
+        if bg.nil? && header_info.nil? && !has_content
             bg = CrymbleUI::Theme.current["cell.empty"]
         end
         case value
@@ -306,23 +359,40 @@ class SimpleMatrixAdapter(T, U, V)
             CrymbleUI::Checkbox.new("", checked: captured, background_color: bg, id: "bool_#{row}_#{col}") do
                 cell_assign(row, col, captured ? "'false" : "'true")
             end
-        when NilRecordStruct, NilDeadAreaStruct, Nil
-            if bg
-                CrymbleUI::TextInput.new(value: "", mode: CrymbleUI::TextInputMode::QuickEntry, background_color: bg)
-            else
-                CrymbleUI::Text.new("")
-            end
         else
             cell_text = display_string(value) # one source of truth for "what the user sees"
+            # An EMPTY assignable cell arrives here too: `cell_read` maps Nil / NilDeadArea —
+            # and everything else it does not name — to "", so every editable cell, empty or
+            # not, is one of the four constructions below. (A `when NilRecordStruct,
+            # NilDeadAreaStruct, Nil` branch used to sit above this one; it was unreachable
+            # for that reason and is gone.)
+            ml = accepts_breaks
+            # While the mode is on, the value being TYPED drives the cell's size. The
+            # hook is attached unconditionally and the matrix decides — fit_cell_to_content is a
+            # no-op unless auto-sizing is on, which keeps the flag in ONE place instead of two.
+            # Attached after construction via the setter, so the four-way construction below
+            # does not double.
+            fit_on_change = ->(v : String, ev : CrymbleUI::TextInputEvent) {
+                if ev.change?
+                    if vm = @virtual_matrix
+                        font_size = CrymbleUI::FontSizing.calculate_size(0)
+                        vm.fit_cell_to_content(row, col,
+                            CrymbleUI::TextInput.content_width_for(v, font_size),
+                            CrymbleUI::TextInput.content_height_for(v, font_size),
+                            CrymbleUI::TextLines.of(v).line_count)
+                    end
+                end
+                nil
+            }
             if bg && text_color
-                CrymbleUI::TextInput.new(value: cell_text, mode: CrymbleUI::TextInputMode::QuickEntry, text_color: text_color, background_color: bg)
+                CrymbleUI::TextInput.new(value: cell_text, mode: CrymbleUI::TextInputMode::QuickEntry, text_color: text_color, background_color: bg, multiline: ml)
             elsif bg
-                CrymbleUI::TextInput.new(value: cell_text, mode: CrymbleUI::TextInputMode::QuickEntry, background_color: bg)
+                CrymbleUI::TextInput.new(value: cell_text, mode: CrymbleUI::TextInputMode::QuickEntry, background_color: bg, multiline: ml)
             elsif text_color
-                CrymbleUI::TextInput.new(value: cell_text, mode: CrymbleUI::TextInputMode::QuickEntry, text_color: text_color)
+                CrymbleUI::TextInput.new(value: cell_text, mode: CrymbleUI::TextInputMode::QuickEntry, text_color: text_color, multiline: ml)
             else
-                CrymbleUI::TextInput.new(value: cell_text, mode: CrymbleUI::TextInputMode::QuickEntry)
-            end
+                CrymbleUI::TextInput.new(value: cell_text, mode: CrymbleUI::TextInputMode::QuickEntry, multiline: ml)
+            end.tap { |ti| ti.on_event = fit_on_change }
         end
     end
 
@@ -401,6 +471,64 @@ class SimpleMatrixAdapter(T, U, V)
         cell_has_content({row, col})
     end
 
+    # === Which announcement does a write make? ===
+    #
+    # Exactly one of three outcomes, decided by the write itself — never by a fingerprint alone,
+    # because a history step moves no dims, no order and no spans while every value changes.
+    #
+    #   silent     nothing mutated (a Drilldown/Not refusal). The repaint that clears the
+    #              editor's rejected text comes from @on_data_changed, which the caller fires.
+    #   per-cell   an alias-free Shape, a Directly write, unrelocated, not a header, and the
+    #              structure did not move.
+    #   structural everything else — including a created record, which no fingerprint can see.
+    #
+    # Seethe design notes for the measurements behind each veto.
+    # The two vetoes knowable BEFORE the write: a header cell can re-group rows, and a Shape
+    # that pulls fields across a reference paints one record into several rows. Both settle the
+    # answer as "structural" on their own, so when either fires the caller skips the O(rows)
+    # scroll-order capture entirely — a joined Shape would otherwise pay a full fingerprint on
+    # every keystroke for an answer that was predetermined.
+    private def may_announce_per_cell?(shape : ShapeState, index : {Int32, Int32}) : Bool
+        cell_get_header_info(index).nil? && shape.alias_free?
+    end
+
+    private def capture_structure : {Array(Int32), Array(Int32)}
+        rows, cols = get_scrollorder
+        # Dup EACH array: get_scrollorder hands out the pivot's retained @scrollorder, and
+        # Tuple#dup is shallow — dupping the tuple would compare an array with itself.
+        {rows.dup, cols.dup}
+    end
+
+    private def structure_unchanged?(before : {Array(Int32), Array(Int32)}) : Bool
+        rows, cols = get_scrollorder
+        rows == before[0] && cols == before[1]
+    end
+
+    private def announce_write(shape : ShapeState, requested : {Int32, Int32},
+                               result : {Int32, Int32}, before : {Array(Int32), Array(Int32)}?) : Nil
+        return unless @last_assign_mutated # silent: nothing was written
+        # `before` is nil when the classification was already settled before the write, so the
+        # O(rows) capture was skipped — see may_announce_per_cell?.
+        per_cell = !before.nil? &&
+                   @last_assign_kind == Table::Lazy::Pivot::Assignability::Directly &&
+                   result == requested &&
+                   structure_unchanged?(before)
+        # The write owns its announcement: suppress the version gate's, so an edit announces
+        # ONCE (it announced twice before this task — the gate plus an explicit call here).
+        shape.update(suppress_announce: true)
+        # The gate can install a NEW adapter (a table change landing in the same breath as a
+        # write); then the announcement we suppressed was that adapter's, and ours would go to
+        # an orphan. Announce on whoever the Shape holds now.
+        live = shape.matrix_adapter
+        if live && !live.same?(self)
+            live.invalidate_all!
+        elsif per_cell
+            invalidate_cell!(requested[0], requested[1])
+        else
+            invalidate_all!
+        end
+    end
+
     def cell_assign(row : Int32, col : Int32, value : String) : Tuple(Int32, Int32)
         # Read-only Shapes (e.g. diff-Shapes) refuse edits: editing a nil cell
         # in a diff view would write on top of the clamped context and confuse.
@@ -408,6 +536,8 @@ class SimpleMatrixAdapter(T, U, V)
         converted = CellHelper.convert(value)
         return {row, col} unless converted
         if shape = @shape
+            reset_write_signal
+            before = may_announce_per_cell?(shape, {row, col}) ? capture_structure : nil
             @persistency.contexts.push(shape.context)
             begin
                 result = cell_assign({row, col}, converted[0])
@@ -415,9 +545,8 @@ class SimpleMatrixAdapter(T, U, V)
                 result = {row, col}
             end
             shape.context = @persistency.contexts.pop
-            shape.update
             CrymbleUI::InputLog.record_write(row, col, value) if CrymbleUI::InputLog.enabled?
-            invalidate_all!
+            announce_write(shape, {row, col}, result, before)
             @on_data_changed.try &.call
             result
         else
@@ -433,6 +562,8 @@ class SimpleMatrixAdapter(T, U, V)
     def cell_assign_reference(row : Int32, col : Int32, rank : Int32) : Tuple(Int32, Int32)
         @just_edited = true
         if shape = @shape
+            reset_write_signal
+            before = may_announce_per_cell?(shape, {row, col}) ? capture_structure : nil
             @persistency.contexts.push(shape.context)
             begin
                 current = @matrix_rc[{row, col}.to_a]
@@ -446,8 +577,7 @@ class SimpleMatrixAdapter(T, U, V)
                 result = {row, col}
             end
             shape.context = @persistency.contexts.pop
-            shape.update
-            invalidate_all!
+            announce_write(shape, {row, col}, result, before)
             @virtual_matrix.try &.set_cursor(result[0], result[1])
             @on_data_changed.try &.call
             result
@@ -518,7 +648,38 @@ class SimpleMatrixAdapter(T, U, V)
     end
 
     def get_scrollorder : {Array(Int32), Array(Int32)}
-        with_shape_context { @matrix_rc.get_scrollorder }
+        order = with_shape_context { @matrix_rc.get_scrollorder }
+        log_sticky_header_seam(order) if ENV["CRYMBLE_STICKY_LOG"]?
+        order
+    end
+
+    # THE SEAM between this adapter and the matrix, on demand: `CRYMBLE_STICKY_LOG=1`.
+    #
+    # Stickiness has no flag — it is the trailing run of the scroll order that forms {0..N-1}. A
+    # row-SPANNING header in a column outside that run reaches the matrix as ordinary scrolling
+    # content, and the matrix then computes its clipped disposition only at layout, so a group
+    # label freezes instead of drifting through its span. crymbleui cannot catch this (its specs and
+    # its demo declare stickiness correctly) and `spec/table/pivot_spec.cr` only checks the pivot's
+    # arithmetic, so this line is the only place the two halves meet.
+    private def log_sticky_header_seam(order) : Nil
+        rows, cols = order
+        sticky = Set(Int32).new
+        cols.reverse_each do |idx|
+            probe = sticky.dup << idx
+            break unless probe == (0...probe.size).to_set
+            sticky = probe
+        end
+        offenders = [] of String
+        rows.each do |r|
+            cols.each do |c|
+                bb = cell_get_bounding_box({r, c})
+                next unless bb[0][0] != bb[1][0]
+                hdr = cell_get_header_info({r, c})
+                offenders << "{#{r},#{c}}#{hdr ? "hdr" : "plain"}" unless sticky.includes?(c)
+            end
+        end
+        STDERR.puts "[seam] cols=#{cols} sticky_tail=#{sticky.to_a.sort} " \
+                    "row_spanning_outside_tail=#{offenders.first(8)}"
     end
 
     def cell_get_header_info(index : {Int32, Int32}) : {Bool, Int32}?
@@ -613,14 +774,37 @@ class SimpleMatrixAdapter(T, U, V)
         end
     end
 
+    # Which assignability branch the last write took, and whether it mutated anything. The
+    # announcement classifier needs both, and NEITHER can be recovered afterwards:
+    # re-querying get_assignability once the Indirectly branch has run hyperplane_add answers
+    # Directly, so a record-creating write would never be classified structural. The mismatch
+    # path below also mutates twice (add then remove) before raising, which is why "did it
+    # mutate" is tracked separately from "did it raise".
+    @last_assign_kind : Table::Lazy::Pivot::Assignability? = nil
+    @last_assign_mutated : Bool = false
+
+    # Every write bridge clears the pair before it starts. Without this, a bridge path that
+    # never reaches `cell_assign` — the non-ReferenceCell branch and the rescue in
+    # `cell_assign_reference` — would let `announce_write` classify using the PREVIOUS write's
+    # outcome, and announce a per-cell repaint for a cell nothing touched.
+    private def reset_write_signal : Nil
+        @last_assign_kind = nil
+        @last_assign_mutated = false
+    end
+
     def cell_assign(index : {Int32, Int32}, value : T) : {Int32, Int32}
         @just_edited = true
         index_a = index.to_a
-        case @matrix_rc.get_assignability(index_a)
+        kind = @matrix_rc.get_assignability(index_a)
+        @last_assign_kind = kind
+        @last_assign_mutated = false
+        case kind
         when Table::Lazy::Pivot::Assignability::Directly
             res = @matrix_rc[index_a] = value
+            @last_assign_mutated = true
         when Table::Lazy::Pivot::Assignability::Indirectly
             res = @matrix_rc.hyperplane_add(0, index_a)
+            @last_assign_mutated = true # the record now exists, even on the raise path below
             if @matrix_rc[res].is_a?(ReferenceCell) == value.is_a?(ReferenceCell)
                 res = @matrix_rc[res] = value
             else
@@ -771,6 +955,10 @@ class ShapeState
     getter table_lid : TableLID? = nil
     @matrix_userdata_rc : Table::Lazy::Pivot::Hierarchic(Cell, BaseCell, FieldlistCell)? = nil
     @mirror_aggregates = true
+    # Cell sizes follow the content instead of the user's drags. Off by default — the
+    # 2026-08-10 decision that row height stays user-controlled still governs the unchecked
+    # state, which is the default one.
+    @auto_size_cells = false
     @commit_leaves = Array(CommitLID).new
     @commit_path = Array(CommitLID).new
     @commit_leaf_rank = -1
@@ -851,6 +1039,11 @@ class ShapeState
         @widget_table_picker = GUI::Widget::TablePicker.new(@persistency, @context, lid: other.@table_lid, allow_create: true, suppress_empty: true, prefill_table: true)
         # Deep-copy filter state — duplicates start with the same filters but diverge on edit
         @filter_state = other.@filter_state.map(&.dup)
+        # Unconditionally, unlike the adapter's dragged sizes below: those sit inside the
+        # `if configurator && fieldlist` branch, and a duplicate of a table-less Shape must
+        # still remember the mode. (`mirror_aggregates` is NOT copied at all — it is the wrong
+        # sibling to imitate here.)
+        @auto_size_cells = other.@auto_size_cells
         if !other.@configurator.nil? && !other.@fieldlist.nil?
             @configurator = other.@configurator.not_nil!.clone(false)
             # Re-pin the cloned Configurator to THIS shape's context (not other's).
@@ -873,6 +1066,33 @@ class ShapeState
         # needs to be seeded so the copied current_commit isn't misread as a new branch.
         @commit_path = other.@commit_path.dup
         update(true)
+    end
+
+    # May a single-cell write be announced per-cell in this Shape?
+    #
+    # Only if no displayed column was reached through a reference. A pulled-in column makes one
+    # RECORD paint into several cells (two rows referencing the same city show that city's
+    # fields twice), so a per-cell announcement would leave the siblings stale. Keyed on the
+    # column's PATH, not its field's table: a column can reference its way back to the base
+    # table and still alias, which is exactly what `column_identity`'s own comment warns about
+    # ("the same FieldLID can occur via different reference paths").
+    #
+    # The other aliasing direction — one CELL fed by several records — cannot produce a
+    # per-cell announcement at all: such a cell is a Drilldown, and writing it is refused.
+    #
+    # Fails CLOSED: without a configurator or a built VirtualTable it answers false, because
+    # "cannot prove it" must not read as "safe". The `vt.size` call is not decoration — it is
+    # what makes the answer current: `user_ids` is repopulated by VirtualTable#update, NEVER by
+    # Configurator#update, so reading the Configurator alone would answer from whatever the last
+    # VT build left behind. Both calls are version-gated, so on a write path where the pivot was
+    # already refreshed this costs a gate check, and the refresh it may trigger is the one the
+    # repaint needs anyway.
+    def alias_free? : Bool
+        vt = @unfiltered_vt
+        cfg = @configurator
+        return false unless vt && cfg
+        vt.size # forces VirtualTable#update -> user_ids is current for the predicate below
+        cfg.columns_are_unreferenced?
     end
 
     def dup_shape(newtitle : String) : ShapeState
@@ -1338,6 +1558,7 @@ class ShapeState
     end
 
     property mirror_aggregates : Bool
+    property auto_size_cells : Bool
 
     # === VHTree helpers (for building tree in UI) ===
 
@@ -1387,7 +1608,12 @@ class ShapeState
 
     # === Internal ===
 
-    def update(force_update = false) : Nil
+    # `suppress_announce` silences ONLY the invalidate_all! below — never the gate body, whose
+    # refresh_diff_state! legitimately announces through invalidate_filter. A write that owns
+    # its own announcement passes true; everything else (history, filters, table changes, and
+    # crucially every OTHER Shape's gate, which is the only way it learns of this edit) is
+    # untouched.
+    def update(force_update = false, suppress_announce = false) : Nil
         @persistency.contexts.push(@context)
         new_table = @widget_table_picker.changed?
         # The gate must include the FIELDLIST's version: a Field-list drop writes only the
@@ -1447,7 +1673,7 @@ class ShapeState
             end
             @version = version
             # Invalidate matrix adapter so VirtualMatrix refreshes cached cells
-            @matrix_adapter.try &.invalidate_all!
+            @matrix_adapter.try &.invalidate_all! unless suppress_announce
             # Diff-Shape: refresh the precomputed diff state and row filter so
             # edits made elsewhere (in another shape, on the same open commit)
             # are reflected. Cheap: O(R·F) on the diff-Shape's table only.

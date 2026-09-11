@@ -138,6 +138,14 @@ module FieldlistGrid
     private def fl_free_bg;  GUI::FieldClassColors.free_bg; end
     private def fl_agg_bg;   GUI::FieldClassColors.agg_bg;  end
     private def fl_drag_hl;  CrymbleUI::Theme.current["fieldlist.drag_hl"]; end
+    # The Perspective paints its drop target as an OPAQUE decal on the matrix's additive cursor
+    # overlay, so it reads on any cell. A DropZoneBox highlight is an ordinary alpha composite over
+    # this panel's saturated section colours (green Rows / blue Columns / brown Aggregates) — at the
+    # library default of 0.4, times the colour's own alpha, it landed at 0.31 and looked "merely
+    # slightly lighter" (field report 2026-09-03). Same signal colour as the Perspective decal, at a
+    # strength that survives the composite without hiding the field name underneath. The value is a
+    # theme decision and lives with the palette (resources/theme-colors.json).
+    private def fl_drag_op;  GUI::AppTheme.fieldlist_drag_opacity; end
     private def fl_spacer;   CrymbleUI::Theme.current["fieldlist.spacer"]; end
 
     # Slightly shift a color for even-level distinction
@@ -221,6 +229,7 @@ module FieldlistGrid
                     on_drop_handler: field_handler,
                     background_color: fl_agg_bg,
                     hover_color: fl_drag_hl,
+                    highlight_opacity: fl_drag_op,
                 )
 
                 drag_data = FieldDragData.new(field.ri, field.name)
@@ -242,6 +251,7 @@ module FieldlistGrid
                 on_drop_handler: line_handler,
                 background_color: nil,
                 hover_color: fl_drag_hl,
+                highlight_opacity: fl_drag_op,
             )
             trailing.add_child(CrymbleUI::Text.new("  ", font_scale: -1))
             trailing.hover_text = "Aggregates block"
@@ -260,6 +270,7 @@ module FieldlistGrid
             on_drop_handler: empty_handler,
             background_color: nil,
             hover_color: fl_drag_hl,
+            highlight_opacity: fl_drag_op,
         )
         empty_cell.add_child(CrymbleUI::Text.new("  ", font_scale: -1))
         empty_cell.hover_text = "Aggregates block"
@@ -346,6 +357,7 @@ module FieldlistGrid
                     on_drop_handler: field_handler,
                     background_color: nil,
                     hover_color: fl_drag_hl,
+                    highlight_opacity: fl_drag_op,
                 )
 
                 drag_data = FieldDragData.new(field.ri, field.name)
@@ -387,6 +399,7 @@ module FieldlistGrid
                 on_drop_handler: append_handler,
                 background_color: nil,
                 hover_color: fl_drag_hl,
+                highlight_opacity: fl_drag_op,
             )
             append_drop.add_child(CrymbleUI::Text.new("  ", font_scale: -1))
             append_drop.hover_text = section_info
@@ -405,6 +418,7 @@ module FieldlistGrid
                 on_drop_handler: outer_handler,
                 background_color: bg,
                 hover_color: fl_drag_hl,
+                highlight_opacity: fl_drag_op,
             )
             section_drop.add_child(content_widget)
             section_drop.hover_text = section_info

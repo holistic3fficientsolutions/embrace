@@ -1,0 +1,452 @@
+require "spec"
+require "../../spec/spec_helper"
+require "../../src/gui/embrace"
+require "../../src/gui/cell"
+require "../../src/debug-helper"
+require "../../src/constants"
+require "crymble-ui/testing/test_renderer"
+
+include Persistency
+
+# Shape → View → "Auto-size perspective cells".
+#
+# core's spec_helper installs NO font, so measure_text reports width 0 and every size claim
+# below would be vacuous. Installed for this file only and restored after, because the font is
+# global and other core specs are written against the zero-width measurement.
+
+private def make_sized_app : EmbraceApp
+    app = EmbraceApp.new
+    p = app.persistency
+    hash = Hash(String, FieldLID | TableLID | RecordLID).new
+    TableReader(Persistency::Default, Persistency::Cell).new(p, hash) << <<-EOT
+        Notes
+        Name | Body
+        Al | a considerably longer value than the others
+        Bo | b
+    EOT
+    app.shapes.clear
+    app.shapes << ShapeState.new("N", p, p.context.clone, hash["Notes"].as(TableLID))
+    app.request_rebuild
+    app
+end
+
+# The shape of the field report: THREE data fields, the first empty, a long value in the
+# second, a short one in the third — and values present on some rows only. The two-field fixture
+# above never produced a third column, which is where the header drift was visible.
+private def make_field_report_app : EmbraceApp
+    app = EmbraceApp.new
+    p = app.persistency
+    hash = Hash(String, FieldLID | TableLID | RecordLID).new
+    TableReader(Persistency::Default, Persistency::Cell).new(p, hash) << <<-EOT
+        Sheet
+        c1 | c2 | c3
+        1 | ahjh wjdj wjdjw jdjw | 
+        2 |  | iwdidw
+        3 |  | 
+        4 |  | 
+    EOT
+    app.shapes.clear
+    app.shapes << ShapeState.new("F", p, p.context.clone, hash["Sheet"].as(TableLID))
+    app.request_rebuild
+    app
+end
+
+private def toggle_id(shape) : String
+    "auto_size_cells_#{shape.id}"
+end
+
+private def data_cell(adapter, want : String) : Tuple(Int32, Int32)?
+    rows, cols = adapter.get_scrollorder
+    rows.each do |r|
+        cols.each do |c|
+            return {r, c} if adapter.cell_read({r, c}).to_s == want
+        end
+    end
+    nil
+end
+
+describe "auto-size perspective cells" do
+    original_font = CrymbleUI::Widget.font
+    before_each { CrymbleUI::Widget.font = CrymbleUI::Testing::TestFont.new }
+    after_each { CrymbleUI::Widget.font = original_font }
+
+    it "measures a cell the way it PAINTS it: a dropdown votes width, not lines" do
+        # doc/08-shapes.md:244 promises "a referenced (dropdown) cell contributes its width but not
+        # its line count", and the LIBRARY default honours it by asking the painted widget — a
+        # ComboBox reports no line count. embrace's own cell_natural_size override (written to avoid
+        # cell_read's highlight side effects) measured every cell as a TextInput over the raw string,
+        # so a multi-line referenced value voted 2 lines and grew the row. Measured, not guessed.
+        p = Persistency::Default.new
+        hash = Hash(String, FieldLID | TableLID | RecordLID).new
+        TableReader(Persistency::Default, Persistency::Cell).new(p, hash) << <<-EOT
+            Cities
+            City | Country
+            Arizona | USA
+            Boston | USA
+
+            Persons
+            Person | City_City
+            Alan | Boston
+        EOT
+        cities = ShapeState.new("C", p, p.context.clone)
+        cities.widget_table_picker.select_index(0)
+        cities.update(true)
+        ca = cities.matrix_adapter.not_nil!
+        crows, ccols = ca.get_scrollorder
+        city = nil
+        crows.each { |r| ccols.each { |c| city ||= ({r, c} if ca.cell_read({r, c}).to_s == "Boston") } }
+        ca.cell_assign(city.not_nil!, "Bos\nton") # the referenced value now has a hard break
+
+        persons = ShapeState.new("P", p, p.context.clone)
+        persons.widget_table_picker.select_index(1)
+        persons.update(true)
+        pa = persons.matrix_adapter.not_nil!
+        rows, cols = pa.get_scrollorder
+        ref = nil
+        rows.each { |r| cols.each { |c| ref ||= ({r, c} if !pa.cell_get_header_info({r, c}) && pa.cell_read({r, c}).is_a?(ReferenceCell)) } }
+        rc = ref.not_nil!
+        pa.cell_paint(rc[0], rc[1]).should be_a(CrymbleUI::ComboBox) # instrument: it really is a dropdown
+
+        nat = pa.cell_natural_size(rc[0], rc[1])
+        nat[:lines].should eq(1)     # one line, as the doc promises and the dropdown paints
+        nat[:width].should be > 0.0  # ...and it still votes a width
+    end
+
+    it "a structural change does not throw away where the user was scrolled" do
+        # Field report: inserting a record while scrolled sent the view back to the top.
+        #
+        # A rebuild carries the scroll offset, but the new matrix starts at the ADAPTER's sizes —
+        # the content-measured ones arrive later in the same frame. Every clamp in between computes
+        # its maximum from a grid that is briefly its DEFAULT size (measured: 89px of content against
+        # a 402px viewport where the real content is 654px), and a maximum of zero discards any
+        # scrolled position. Unreachable before content sizing, because a row could not exceed the
+        # viewport at all.
+        #
+        # Driven through the app, not the widget: a synthetic reconcile does not reproduce it —
+        # tried, and the example passed with the fix removed.
+        app = make_sized_app
+        renderer = CrymbleUI::Testing::TestRenderer.new(1200, 600)
+        renderer.settle_rendering(app)
+        shape = app.shapes.first
+        adapter = shape.matrix_adapter.not_nil!
+        app.find(toggle_id(shape)).not_nil!.as(CrymbleUI::MenuItem).trigger_click
+        renderer.settle_rendering(app)
+
+        # A tall value, the way multi-line records make one.
+        vm = adapter.virtual_matrix.not_nil!
+        rows, cols = adapter.get_scrollorder
+        rc = {rows[0], cols[1]}
+        vm.set_cursor_from_cell(rc)
+        vm.on_text_input('a')
+        40.times { vm.on_key_down(SF::Keyboard::Key::Enter, false, false, true); vm.on_text_input('b') }
+        vm.on_key_down(SF::Keyboard::Key::Enter, false, false)
+        renderer.settle_rendering(app)
+
+        live = adapter.virtual_matrix.not_nil!
+        sv = live.content_scroll_view.not_nil!
+        (sv.content_size.height - sv.viewport_size.height).should be > 100.0 # instrument: room to scroll
+        sv.set_scroll_offset_for_test(CrymbleUI::Vec2.new(0.0, 200.0))
+        renderer.render_frame(app)
+        adapter.virtual_matrix.not_nil!.scroll_offset.y.should be_close(200.0, 1.0)
+
+        shape.add_record   # the insert
+        app.request_rebuild
+        renderer.settle_rendering(app)
+
+        adapter.virtual_matrix.not_nil!.scroll_offset.y.should be_close(200.0, 1.0)
+    end
+
+    it "measures a width at all (without this, every example below is vacuous)" do
+        CrymbleUI::Widget.measure_text("Alpha", 14.0).width.should be > 0.0
+    end
+
+    it "widens the column holding a long value when the toggle is clicked" do
+        # Driven through the menu item by id, as a user would — not by setting the flag. The
+        # wiring IS the feature; a test that sets shape.auto_size_cells directly would pass
+        # with the menu item missing entirely.
+        app = make_sized_app
+        renderer = CrymbleUI::Testing::TestRenderer.new(1200, 800)
+        renderer.settle_rendering(app)
+        shape = app.shapes.first
+        adapter = shape.matrix_adapter.not_nil!
+        rc = data_cell(adapter, "a considerably longer value than the others").not_nil!
+        before = adapter.virtual_matrix.not_nil!.active_cells[rc].bounds.width
+
+        app.find(toggle_id(shape)).not_nil!.as(CrymbleUI::MenuItem).trigger_click
+        renderer.settle_rendering(app)
+
+        # Assert the LAID-OUT cell, never get_col_width: those two disagreeing is exactly the
+        # defect that made an earlier design look like it worked.
+        live = adapter.virtual_matrix.not_nil!
+        live.active_cells[rc].bounds.width.should be > before
+    end
+
+    it "refuses the drag while on — the mode owns every line's size, including the record column" do
+        app = make_sized_app
+        renderer = CrymbleUI::Testing::TestRenderer.new(1200, 800)
+        renderer.settle_rendering(app)
+        shape = app.shapes.first
+        adapter = shape.matrix_adapter.not_nil!
+        vm = adapter.virtual_matrix.not_nil!
+        fh = CrymbleUI::VirtualMatrix::FRAME_HEIGHT_BASE * CrymbleUI::FontSizing.zoom_factor
+        border_x = vm.absolute_bounds.x + vm.ruler_col_width_pixels +
+                   vm.grid_spacing + vm.get_col_width(0) * fh
+        border_y = vm.absolute_bounds.y + vm.ruler_row_height_pixels / 2.0
+
+        # Control first: with the mode OFF the gesture really does resize at this coordinate.
+        before_off = vm.get_col_width(0)
+        vm.on_mouse_down(CrymbleUI::Vec2.new(border_x, border_y))
+        vm.on_mouse_move(CrymbleUI::Vec2.new(border_x + 50.0, border_y))
+        vm.on_mouse_up(CrymbleUI::Vec2.new(border_x + 50.0, border_y))
+        vm.get_col_width(0).should be > before_off
+
+        app.find(toggle_id(shape)).not_nil!.as(CrymbleUI::MenuItem).trigger_click
+        renderer.settle_rendering(app)
+
+        # The record column is sized too (it compacts to its content, it just never grows past a
+        # viewport it cannot scroll), so its drag would be overwritten by the next re-measure like
+        # any other — and the handle is withdrawn rather than left to lie.
+        live = adapter.virtual_matrix.not_nil!
+        sticky_before = live.get_col_width(0)
+        # Recomputed on the LIVE matrix: the toggle rebuilds, and a border read from the old
+        # instance's widths lands next to the edge rather than on it — which would read as "refused"
+        # for the wrong reason.
+        sticky_border = live.absolute_bounds.x + live.ruler_col_width_pixels + live.grid_spacing +
+                        live.get_col_width(0) * fh
+        live.on_mouse_down(CrymbleUI::Vec2.new(sticky_border, border_y))
+        live.on_mouse_move(CrymbleUI::Vec2.new(sticky_border + 50.0, border_y))
+        live.on_mouse_up(CrymbleUI::Vec2.new(sticky_border + 50.0, border_y))
+        live.get_col_width(0).should eq(sticky_before)
+
+        # A column the mode DOES size still refuses: that drag really would be overwritten by the
+        # next re-measure.
+        live2 = adapter.virtual_matrix.not_nil!
+        sized_border = live2.absolute_bounds.x + live2.ruler_col_width_pixels + live2.grid_spacing +
+                       live2.get_col_width(0) * fh + live2.grid_spacing + live2.get_col_width(1) * fh
+        pinned = live2.get_col_width(1)
+        live2.on_mouse_down(CrymbleUI::Vec2.new(sized_border, border_y))
+        live2.on_mouse_move(CrymbleUI::Vec2.new(sized_border + 50.0, border_y))
+        live2.on_mouse_up(CrymbleUI::Vec2.new(sized_border + 50.0, border_y))
+        live2.get_col_width(1).should eq(pinned)
+    end
+
+    it "is off by default and the menu item reflects the state" do
+        app = make_sized_app
+        renderer = CrymbleUI::Testing::TestRenderer.new(1200, 800)
+        renderer.settle_rendering(app)
+        shape = app.shapes.first
+        shape.auto_size_cells.should be_false
+        item = app.find(toggle_id(shape)).not_nil!.as(CrymbleUI::MenuItem)
+        item.trigger_click
+        renderer.settle_rendering(app)
+        shape.auto_size_cells.should be_true
+    end
+
+    it "a table of single-line values does not change height when the mode goes on" do
+        # A single line's NATURAL height (font + padding + border) exceeds the box a default row
+        # already paints in, so sizing every row to it would make an ordinary table ~20% shorter
+        # in records while claiming to fit content that already fits. Asserted together with a
+        # width that DID move, so "nothing changed" cannot pass as "the row rule worked".
+        app = make_sized_app
+        renderer = CrymbleUI::Testing::TestRenderer.new(1200, 800)
+        renderer.settle_rendering(app)
+        shape = app.shapes.first
+        adapter = shape.matrix_adapter.not_nil!
+        rc = data_cell(adapter, "a considerably longer value than the others").not_nil!
+        vm = adapter.virtual_matrix.not_nil!
+        height_before = vm.active_cells[rc].bounds.height
+        width_before = vm.active_cells[rc].bounds.width
+
+        app.find(toggle_id(shape)).not_nil!.as(CrymbleUI::MenuItem).trigger_click
+        renderer.settle_rendering(app)
+
+        live = adapter.virtual_matrix.not_nil!
+        live.active_cells[rc].bounds.width.should be > width_before    # something DID move
+        live.active_cells[rc].bounds.height.should eq(height_before)   # ... but not the height
+    end
+
+    it "grows the cell while typing, without losing the editor" do
+        # The headline behaviour: the value being typed drives the size. The editor must survive
+        # it — a teardown would take the caret with it.
+        app = make_sized_app
+        renderer = CrymbleUI::Testing::TestRenderer.new(1200, 800)
+        renderer.settle_rendering(app)
+        shape = app.shapes.first
+        adapter = shape.matrix_adapter.not_nil!
+        app.find(toggle_id(shape)).not_nil!.as(CrymbleUI::MenuItem).trigger_click
+        renderer.settle_rendering(app)
+
+        live = adapter.virtual_matrix.not_nil!
+        rc = data_cell(adapter, "b").not_nil!
+        before = live.active_cells[rc].bounds.width
+        live.set_cursor_from_cell(rc)
+        live.on_text_input('W')
+        editor = live.proxy_focused_widget
+        editor.should_not be_nil
+        # Long enough to exceed the column's existing maximum: this cell shares its column with
+        # a 42-character value, so a shorter entry could not widen anything and the example
+        # would assert nothing.
+        90.times { live.on_text_input('W') }
+        renderer.render_frame(app)
+
+        live.proxy_focused_widget.should be(editor)                      # same editor object
+        live.active_cells[rc].bounds.width.should be > before            # and the cell grew
+        adapter.cell_read(rc).to_s.should eq("b")                        # still uncommitted
+    end
+
+    it "grows the row for the breaks you type, and keeps the value in view" do
+        # Field report, two rounds. The breaks a user types ARE content: the row grows for them
+        # (round 2: sizing to the content-bearing lines cut them away). And because the row
+        # holds the whole value, the caret resting on the last — blank — line does not scroll
+        # the text out of the cell, which is what made the cell look empty while editing.
+        app = make_sized_app
+        renderer = CrymbleUI::Testing::TestRenderer.new(1200, 800)
+        renderer.settle_rendering(app)
+        shape = app.shapes.first
+        adapter = shape.matrix_adapter.not_nil!
+        app.find(toggle_id(shape)).not_nil!.as(CrymbleUI::MenuItem).trigger_click
+        renderer.settle_rendering(app)
+
+        live = adapter.virtual_matrix.not_nil!
+        rc = data_cell(adapter, "b").not_nil!
+        before = live.active_cells[rc].bounds.height
+        live.set_cursor_from_cell(rc)
+        live.on_text_input('x')
+        4.times { live.on_key_down(SF::Keyboard::Key::Enter, false, false, true) } # Alt+Enter
+        renderer.render_frame(app)
+
+        live.active_cells[rc].bounds.height.should be > before
+        editor = live.proxy_focused_widget.not_nil!.as(CrymbleUI::TextInput)
+        editor.cursor_pos.should eq(5)                     # caret on the last, blank, line
+        editor.effective_scroll_offset.y.should eq(0.0)    # ...and nothing scrolled away
+    end
+
+    it "keeps the sizes it computed when the toggle goes off again" do
+        app = make_sized_app
+        renderer = CrymbleUI::Testing::TestRenderer.new(1200, 800)
+        renderer.settle_rendering(app)
+        shape = app.shapes.first
+        adapter = shape.matrix_adapter.not_nil!
+        vm = adapter.virtual_matrix.not_nil!
+        fh = CrymbleUI::VirtualMatrix::FRAME_HEIGHT_BASE * CrymbleUI::FontSizing.zoom_factor
+        border_y = vm.absolute_bounds.y + vm.ruler_row_height_pixels / 2.0
+        # Column 1, not 0: the leftmost column is STICKY and the mode never sizes it, so a
+        # handover example built on it could not tell "handed over" from "never touched".
+        border_x = vm.absolute_bounds.x + vm.ruler_col_width_pixels + vm.grid_spacing +
+                   vm.get_col_width(0) * fh + vm.grid_spacing + vm.get_col_width(1) * fh
+        vm.on_mouse_down(CrymbleUI::Vec2.new(border_x, border_y))
+        vm.on_mouse_move(CrymbleUI::Vec2.new(border_x + 60.0, border_y))
+        vm.on_mouse_up(CrymbleUI::Vec2.new(border_x + 60.0, border_y))
+        renderer.settle_rendering(app)
+        dragged = adapter.virtual_matrix.not_nil!.get_col_width(1)
+
+        app.find(toggle_id(shape)).not_nil!.as(CrymbleUI::MenuItem).trigger_click
+        renderer.settle_rendering(app)
+        auto = adapter.virtual_matrix.not_nil!.get_col_width(1)
+        auto.should_not eq(dragged)   # the mode really took over — else the next assert is vacuous
+
+        app.find(toggle_id(shape)).not_nil!.as(CrymbleUI::MenuItem).trigger_click
+        renderer.settle_rendering(app)
+        vm = adapter.virtual_matrix.not_nil!
+        # Switching off hands the measured layout over as the user's own sizes — it is a good
+        # starting point to adjust from, so nothing moves and the drag simply resumes from there.
+        vm.get_col_width(1).should eq(auto)
+
+        border_x = vm.absolute_bounds.x + vm.ruler_col_width_pixels + vm.grid_spacing +
+                   vm.get_col_width(0) * fh + vm.grid_spacing + vm.get_col_width(1) * fh
+        vm.on_mouse_down(CrymbleUI::Vec2.new(border_x, border_y))
+        vm.on_mouse_move(CrymbleUI::Vec2.new(border_x + 40.0, border_y))
+        vm.on_mouse_up(CrymbleUI::Vec2.new(border_x + 40.0, border_y))
+        renderer.settle_rendering(app)
+        adapter.virtual_matrix.not_nil!.get_col_width(1).should be > auto
+    end
+
+    it "a duplicated Shape keeps the mode" do
+        app = make_sized_app
+        renderer = CrymbleUI::Testing::TestRenderer.new(1200, 800)
+        renderer.settle_rendering(app)
+        shape = app.shapes.first
+        app.find(toggle_id(shape)).not_nil!.as(CrymbleUI::MenuItem).trigger_click
+        renderer.settle_rendering(app)
+
+        copy = shape.dup_shape("Copy")
+        copy.auto_size_cells.should be_true
+    end
+
+    it "keeps each ruler label over the column it names (field report: headers drift)" do
+        # From the field: with the mode on, c3's label sat left of its cells and c1's right of
+        # the rank column. The ruler draws from @cached_col_sizes while cells are placed from
+        # col_physical_cum — if those disagree the header row lies, and no assertion on cell
+        # bounds alone can see it. embrace's scroll order puts headers at the TAIL, so this grid
+        # has STICKY columns, which a plain headerless fixture does not exercise.
+        app = make_field_report_app
+        renderer = CrymbleUI::Testing::TestRenderer.new(1200, 800)
+        renderer.settle_rendering(app)
+        shape = app.shapes.first
+        adapter = shape.matrix_adapter.not_nil!
+
+        app.find(toggle_id(shape)).not_nil!.as(CrymbleUI::MenuItem).trigger_click
+        renderer.settle_rendering(app)
+
+        vm = adapter.virtual_matrix.not_nil!
+        ruler = vm.col_ruler_widget.not_nil!
+        prims = ruler.to_primitives(ruler.bounds)
+        labels = {} of String => Float64
+        font = CrymbleUI::FontSizing.calculate_size(CrymbleUI::VirtualMatrix::RULER_LABEL_FONT_SCALE)
+        prims.each do |pr|
+            if pr.is_a?(CrymbleUI::DrawText)
+                labels[pr.text] = pr.position.x + CrymbleUI::Widget.measure_text(pr.text, font).width / 2.0
+            end
+        end
+        labels.size.should be > 0   # instrument: the ruler drew something
+
+        rows, cols = adapter.get_scrollorder
+        offenders = [] of String
+        cols.each do |c|
+            next if c < vm.sticky_col_count      # sticky columns are drawn by the corner strip
+            cell = vm.active_cells.find { |k, _| k[1] == c }.try(&.[1])
+            next unless cell
+            centre = labels["c#{c + 1}"]?
+            next unless centre
+            left = cell.bounds.x
+            right = cell.bounds.x + cell.bounds.width
+            unless centre >= left && centre <= right
+                offenders << "c#{c + 1} label at #{centre.round(1)} vs column #{left.round(1)}..#{right.round(1)}"
+            end
+        end
+        # Print the whole geometry when it fails, so the numbers can be compared with what is
+        # actually on screen rather than guessed at.
+        offenders.should be_empty, "#{offenders.join("; ")} | labels=#{labels.map { |k, v| "#{k}@#{v.round(1)}" }.join(",")} | sticky_cols=#{vm.sticky_col_count} | order=#{cols.inspect}"
+    end
+
+    it "keeps the sticky corner chrome sized to the columns it covers" do
+        # The field report's real cause: the corner strip is sized from ruler + sticky column
+        # width, and auto-size changed that width without re-laying it out — so it kept a
+        # 143px box where 64.8 was needed and painted over the first data column, which read
+        # on screen as a mysterious empty gap plus a header label sitting off its column.
+        #
+        # This guard lives HERE as well as in crymbleui because every embrace grid has a sticky
+        # column, while a library fixture only has one if someone remembers to build it — and
+        # the eleven library examples that passed while this was broken all had none.
+        app = make_field_report_app
+        renderer = CrymbleUI::Testing::TestRenderer.new(1200, 800)
+        renderer.settle_rendering(app)
+        shape = app.shapes.first
+        adapter = shape.matrix_adapter.not_nil!
+        adapter.virtual_matrix.not_nil!.sticky_col_count.should be > 0 # instrument
+
+        app.find(toggle_id(shape)).not_nil!.as(CrymbleUI::MenuItem).trigger_click
+        renderer.settle_rendering(app)
+
+        vm = adapter.virtual_matrix.not_nil!
+        if corner = vm.corner_ruler_widget
+            corner.bounds.width.should be_close(vm.ruler_col_width_pixels + vm.sticky_col_width_pixels, 0.5)
+        end
+        # And the first data column must actually start where the chrome ends — the overlap is
+        # what was visible.
+        rows, cols = adapter.get_scrollorder
+        first_data = cols.find { |c| c >= vm.sticky_col_count }.not_nil!
+        cell = vm.active_cells.find { |k, _| k[1] == first_data }.not_nil![1]
+        cell.bounds.x.should be >= vm.ruler_col_width_pixels
+    end
+end

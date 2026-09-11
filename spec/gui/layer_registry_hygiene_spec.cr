@@ -6,7 +6,7 @@ require "crymble-ui/testing/test_renderer"
 
 include Persistency
 
-# T-062 regression guard in the REAL embrace tree.
+# Regression guard in the REAL embrace tree.
 #
 # Own-layer widgets (WindowPanel, VirtualMatrix, ...) create their compositing layer
 # LAZILY in perform_layout (@x ||= Layer.new), so a reconcile REUSES the carried
@@ -32,7 +32,7 @@ private def make_app(data_rows : Int32, num_shapes : Int32) : EmbraceApp
   app
 end
 
-describe "embrace layer-registry hygiene (T-062)" do
+describe "embrace layer-registry hygiene" do
   it "keeps active layers flat and duplicate-free across rebuilds (no constructor-layer leak)" do
     app = make_app(20, 2)
     renderer = CrymbleUI::Testing::TestRenderer.new(1200, 800)

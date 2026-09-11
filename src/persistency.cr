@@ -266,7 +266,21 @@ class Persistency::Backend::Memory(T)
     # prefills an empty box, not the placeholder text.
     def display_name(lid : FieldLID) : String # FieldLID == TableLID (both are LIDs into Names)
         name = get_value(MetaFieldLIDs::Names, lid)
-        name.is_a?(String) && !name.empty? ? name : Constant::Unnamed
+        return Constant::Unnamed unless name.is_a?(String) && !name.empty?
+        # A name is presented on ONE line. Names can carry hard line breaks — an .xlsx header
+        # cell wrapped with Alt+Enter is taken verbatim by import, and "Take field names from
+        # record" promotes a cell value — and once measurement became honest about line
+        # count, one such name would make EVERY row of the Configurator tree several times
+        # taller (vhtree takes a uniform max height and scales its spacing by it), on a
+        # document that looked fine before the upgrade.
+        #
+        # Flattened HERE, at the one place every presentation reads through, rather than
+        # where a name is written: loading a document replaces the whole store without ever
+        # calling add_field, so a write-side rule would never reach the names already on
+        # disk — which are precisely the ones that would regress. Nothing stored is altered,
+        # so there is no data change for a user to be told about, and the rename box (which
+        # deliberately reads the RAW name) still round-trips what is there.
+        name.gsub('\n', ' ').gsub('\r', ' ')
     end
     def set_value(field_lid : FieldLID, record_lid : RecordLID, value : T)
         # we must not do a check if the set is invariant at this low level, because it will disrupt the higher level cache (i.e. #set will internally trigger #get with old data)
@@ -366,7 +380,7 @@ class Persistency::Backend::Memory(T)
         target = context.current_commit
         result = Hash(TableLID, TableChanges).new
         return result if target == MetaFieldLIDs::RootCommit
-        # Record MOVES (T-010): #move_records rewrites BelongsTo[record] from one
+        # Record MOVES: #move_records rewrites BelongsTo[record] from one
         # (non-nil) table to another at the open commit — BelongsTo is no longer
         # write-once. A move is, per table, a removal from the old table + an addition
         # to the new (emitted in the moves pass below); its cell re-keys ARE the move,
@@ -388,7 +402,7 @@ class Persistency::Backend::Memory(T)
             next if field_lid < 0
             r2c2v.each do |record_lid, c2v|
                 next unless c2v.has_key?(target)
-                next if moved.has_key?(record_lid) # move re-keys are the move, not edits (T-010)
+                next if moved.has_key?(record_lid) # move re-keys are the move, not edits
                 belongs = get_value(MetaFieldLIDs::BelongsTo, field_lid)
                 next unless belongs.is_a?(Int64)
                 table_lid = belongs.as(TableLID)
@@ -432,7 +446,7 @@ class Persistency::Backend::Memory(T)
         # Pass 3: record/field removals via BelongsTo[lid] = nil at target.
         # remove_record / remove_field set BelongsTo[lid] to nil at the open commit.
         # The prior non-nil value tells us which table the lid used to belong to.
-        # NB(T-009/T-010): `BelongsTo[record]` is NO LONGER write-once — #move_records
+        # NB: `BelongsTo[record]` is NO LONGER write-once — #move_records
         # can change a record's table. So we take the LATEST prior non-nil (the table
         # the record was actually IN when removed), not its origin — otherwise a
         # moved-then-removed record would be misattributed. The move itself is handled
@@ -446,7 +460,7 @@ class Persistency::Backend::Memory(T)
             c2v.each do |c, v|
                 next if c == target
                 next unless v.is_a?(Int64)
-                prior_table_lid = v.as(TableLID) # keep the LATEST prior non-nil (T-010)
+                prior_table_lid = v.as(TableLID) # keep the LATEST prior non-nil
             end
             next unless prior_table_lid
             next if prior_table_lid < 0
@@ -460,7 +474,7 @@ class Persistency::Backend::Memory(T)
             end
             result[prior_table_lid] = tc
         end
-        # Moves pass (T-010): render each detected move as a removal from the old table
+        # Moves pass: render each detected move as a removal from the old table
         # plus an addition to the new — faithful per-table, and never invisible.
         moved.each_value do |from_to|
             from, to = from_to

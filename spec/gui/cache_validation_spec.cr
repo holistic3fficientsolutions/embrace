@@ -271,6 +271,41 @@ describe "Cache validation — embrace scenarios" do
 
     # S8: scroll past one buffer boundary — exercises blit_shift level.
     pending "S8 scroll past buffer boundary"
+
+    # S9: a committed CELL EDIT stays pixel-clean. Until this scenario existed, S0-S8
+    # covered filter, commit, diff, history and scroll — but nothing edited a cell through the
+    # adapter, which is the path the announcement work changed: an edit in an alias-free Shape now announces
+    # `invalidate_cell!`, and that flush clears no layer pixels (unlike `invalidate_all!`, which
+    # clears all five). A cell recreated over a layer that still holds its predecessor's glyphs
+    # is exactly what the dual-pipeline comparison can see and a widget-level assertion cannot.
+    it "S9 cell edit: a committed edit repaints cleanly (per-cell announcement)" do
+        app, _hash = make_demo_app
+        renderer = CrymbleUI::Testing::TestRenderer.new(1200, 800)
+        renderer.settle_rendering(app)
+        shape = app.shapes.first
+        adapter = shape.matrix_adapter.not_nil!
+        # The demo's Allocations Shape shows only its own fields, so it takes the per-cell path.
+        shape.alias_free?.should be_true
+
+        rows, cols = adapter.get_scrollorder
+        target = nil
+        rows.each do |r|
+            cols.each do |c|
+                next if adapter.cell_get_header_info({r, c})
+                next unless adapter.cell_has_content?(r, c)
+                next if adapter.cell_read({r, c}).to_s.empty?
+                target = {r, c} if target.nil?
+            end
+        end
+        target.should_not be_nil
+        rc = target.not_nil!
+
+        with_cv_check do
+            adapter.cell_assign(rc[0], rc[1], "edited")
+            app.request_rebuild
+            renderer.settle_rendering(app)
+        end
+    end
 end
 
 {% else %}

@@ -9,7 +9,7 @@ require "crymble-ui/testing/test_renderer"
 
 include Persistency
 
-# T-072 — file lifecycle atomicity. A failed load, save, or import must leave BOTH the on-disk
+# File lifecycle atomicity. A failed load, save, or import must leave BOTH the on-disk
 # file and the in-memory document exactly as they were. Each test pins a symptom that is RED
 # against the pre-fix behavior (traced in the plan review):
 #   T1  failed load must not split-brain (empty @persistency + old @filename) — the next save
@@ -108,7 +108,7 @@ end
 Spec.before_each { CrymbleUI::Widget.enable_warnings = false }
 Spec.after_each { CrymbleUI::Widget.enable_warnings = true }
 
-describe "T-072 file lifecycle atomicity" do
+describe "file lifecycle atomicity" do
   it "T1: a failed load leaves the document intact, so a later save keeps the good file" do
     app = make_app
     good = File.tempname(".embrace")

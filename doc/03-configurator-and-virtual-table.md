@@ -156,6 +156,21 @@ Consumers that need to know *which field* a rendered column shows (e.g. the diff
 change attribution) resolve `hyperplane_get_id` → `column_identity` — never by comparing
 display names.
 
+**Asking about the path instead of the field.** The stable id is *keyed by* the path that
+reached the column: `Configurator#user_id_mgr` is an `IDContainer` whose keys are those paths,
+so a column's path is recoverable without any resolver. A base column's path is `[field]`;
+every reference hop appends `[table, field]`, giving lengths 1, 3, 5, … (the root table is
+omitted). `Configurator#columns_are_unreferenced?` answers the one question that needs this —
+did *every* displayed column arrive without crossing a reference — and it is the right tool
+precisely where `column_identity` is the wrong one: a column can reference its way back to the
+base table and report a base-table FieldLID while still aliasing. `IDContainer#each_entry`
+exists for that read, because `get_id`, the container's only other lookup, inserts on a miss.
+
+Two cautions for anyone reusing this. `user_ids` is populated by **`VirtualTable#update`**, not
+by `Configurator#update` — so the VT must be current before the set is read, or the answer
+describes the previous build. And `Configurator#run` allocates a whole new VirtualTable: it
+costs O(rows) and is not a way to "just refresh" this.
+
 ### ReferenceCell Construction
 
 When `VirtualTable#[]?` encounters a reference field, it constructs a `ReferenceCell(U)`

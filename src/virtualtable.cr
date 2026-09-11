@@ -260,6 +260,25 @@ class Configurator(T,U) # TODO(vtable): collapse this Configurator namespace int
         update
         VirtualTable(T,U).new(@persistency, self)
     end
+    # Did EVERY displayed column arrive without crossing a reference?
+    #
+    # A base column's user-id path is `[field]`; every reference hop appends `[table, field]`,
+    # so lengths run 1, 3, 5 — the root table is omitted. A path longer than 1 means the column
+    # was pulled in across a reference, which makes one record paint into several rows.
+    #
+    # CALLER CONTRACT: the VirtualTable must be current first. `user_ids` is populated by
+    # *VirtualTable#update*, never by Configurator#update — so this reads whatever the last VT
+    # build left behind, and would answer from a stale set otherwise. ShapeState#alias_free?
+    # forces that refresh before calling. Deliberately NOT via Configurator#run, which
+    # allocates a fresh VirtualTable and costs O(rows).
+    #
+    # O(user_id_mgr, ~= displayed columns), allocation-free, short-circuiting.
+    def columns_are_unreferenced? : Bool
+        ids = user_ids
+        return false if ids.empty? # nothing has been built yet — cannot prove it, so don't claim it
+        user_id_mgr.each_entry { |path, uid| return false if path.size != 1 && ids.includes?(uid) }
+        true
+    end
     def version : Int32
         update
         @version
