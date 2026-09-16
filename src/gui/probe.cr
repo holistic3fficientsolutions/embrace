@@ -55,7 +55,28 @@ module EmbraceProbe
     # never let the instrument kill the app it is measuring
   end
 
+  @@app : EmbraceApp? = nil
+  @@armed = false
+
+  # The scheduler does not exist until the renderer installs it (Widget.scheduler? is nil before
+  # then, and the raising accessor is what made the first instrumented build die on startup with
+  # "Scheduler not initialized" - a log file and no window). So start() only opens the log, and the
+  # timer is armed from the first rendered frame, via EmbraceApp#overlay_primitives.
+  def self.arm_if_needed : Nil
+    return if @@armed
+    sched = CrymbleUI::Widget.scheduler?
+    return unless sched
+    app = @@app
+    return unless app
+    @@armed = true
+    log "probe armed - the renderer's scheduler is up; ticking every 16ms from here"
+    sched.schedule(Time::Span.new(nanoseconds: 16_000_000), repeating: true) { tick(app) }
+  rescue ex
+    log "!! PROBE ARM FAILED #{ex.class}: #{ex.message}"
+  end
+
   def self.start(app) : Nil
+    @@app = app
     @@io = File.open(path, "w")
     log "== embrace probe log =="
     log "build          #{BUILD_REV}   embrace #{Constant::Version}"
@@ -76,10 +97,8 @@ module EmbraceProbe
     log "               covered layers', NOT 'nothing wrong'."
     log "columns below  frame | dt_ms | shape | matrix wxh @scroll | layer wxh origin | keys | cells"
     log ""
-
-    CrymbleUI::Widget.scheduler.schedule(Time::Span.new(nanoseconds: 16_000_000), repeating: true) do
-      tick(app)
-    end
+    # NOT scheduled here on purpose - see arm_if_needed.
+    arm_if_needed
   end
 
   private def self.fmt(v) : String

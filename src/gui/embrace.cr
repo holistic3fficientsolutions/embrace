@@ -1167,6 +1167,10 @@ class EmbraceApp < CrymbleUI::App
     # === Splash Overlay ===
 
     def overlay_primitives(window_width : Float64, window_height : Float64) : Array(CrymbleUI::DrawPrimitive)?
+        # Diagnostic builds only: the first rendered frame is the earliest point at which the
+        # renderer's scheduler exists, so this is where the probe's timer gets armed. Compiled out
+        # entirely without -Dprobe.
+        {% if flag?(:probe) %} EmbraceProbe.arm_if_needed {% end %}
         # Lazy-start the splash timer on first render so it survives slow init.
         splash_start = (@splash_start ||= Time.instant)
         delta = (Time.instant - splash_start).total_seconds
