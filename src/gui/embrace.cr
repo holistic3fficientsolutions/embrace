@@ -195,7 +195,7 @@ class EmbraceApp < CrymbleUI::App
 
     def build : CrymbleUI::Widget
         @build_count += 1 # test instrument (rebuild cost audit)
-        window("H3O Embrace", 1200, 900) do
+        window("H3O Embrace®", 1200, 900) do
             on_closed { do_quit }
 
             menubar do
@@ -267,7 +267,7 @@ class EmbraceApp < CrymbleUI::App
                             text("Open source under the GNU Affero General Public License v3.")
                             text("Commercial & Enterprise licensing: h3o.de")
                             text("Patent pending")
-                            text("H3O Embrace is a registered trademark")
+                            text("H3O Embrace® is a registered trademark")
                             text("")
                             text("Using:")
                             text("CrymbleUI (version #{CrymbleUI::VERSION}, MIT license)")
@@ -663,6 +663,7 @@ class EmbraceApp < CrymbleUI::App
                     m.header "", "Table", "Records", "Fields", "Cells", ""
                     named_changes.each do |table_lid, table_name, tc|
                         captured_table_lid = table_lid
+                        captured_shape = shape
                         captured_shape_id = shape.id
                         checked = !@commit_deferred.includes?({captured_shape_id, captured_table_lid})
                         # git-style +/- for records and fields. Cells stay as
@@ -685,7 +686,7 @@ class EmbraceApp < CrymbleUI::App
                             r.text(f_str)
                             r.text(c_str)
                             r << CrymbleUI::Button.new("→ Shape", padding: 3.0, id: "changes_to_shape_#{captured_shape_id}_#{captured_table_lid}") do
-                                shape_add_for_table(captured_table_lid)
+                                shape_add_for_table(captured_shape, captured_table_lid)
                             end.as(CrymbleUI::Widget)
                         end
                     end

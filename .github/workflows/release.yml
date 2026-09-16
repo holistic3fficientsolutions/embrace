@@ -30,6 +30,11 @@ on:
       tag:
         description: "Existing tag to build (e.g. v2.0.4)"
         required: true
+      instrumented:
+        description: "Also build embrace-windows-x64-instrumented.exe (diagnostic; slow, writes a log)"
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: write
@@ -128,6 +133,56 @@ jobs:
           echo "ASSET=embrace-windows-x64.exe" >> "$GITHUB_ENV"
 
       - name: Upload the .exe to the Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: gh release upload "$TAG" "$ASSET" --repo "$REPO" --clobber
+
+  # DIAGNOSTIC build, OPT-IN via the workflow_dispatch input. It is deliberately not part of a
+  # normal tag release: it compiles -Dprobe (per-frame log beside the .exe) and -Dcache_validation
+  # (every viewport-cache CONTENT layer re-rendered and compared pixel-by-pixel each frame), so it
+  # is much slower than the shipping build and must never be handed out as one. The stock
+  # `windows` job above is untouched and still produces the published .exe.
+  #
+  # What the log is for: a column that is in view with no cell widgets, and the auto-size
+  # whole-table re-measure, which shows up as a multi-second frame gap. See
+  # src/gui/probe.cr for the full list, and for what the instrument CANNOT see — sticky layers are
+  # not validated, so a quiet log is not a clean bill of health.
+  windows-instrumented:
+    needs: create_release
+    if: ${{ github.event.inputs.instrumented == 'true' }}
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: crystal-lang/install-crystal@v1
+        with:
+          crystal: "1.20.0"
+
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - name: shards install
+        run: shards install
+
+      # Same script, same flags as the release build, plus the two diagnostic flags.
+      - name: Build instrumented .exe
+        shell: cmd
+        env:
+          EMBRACE_EXTRA_FLAGS: -Dprobe -Dcache_validation
+        run: call tools\win-build.bat
+
+      - name: Name the asset
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp bin/embrace.exe "embrace-windows-x64-instrumented.exe"
+          echo "ASSET=embrace-windows-x64-instrumented.exe" >> "$GITHUB_ENV"
+
+      - name: Upload the instrumented .exe to the Release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}

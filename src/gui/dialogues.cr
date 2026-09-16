@@ -281,6 +281,24 @@ class DirBrowser < Base
     property items : Array({String, String, String, File::Info})
     property sort_column : Int32 = 0
     property sort_ascending : Bool = true
+    # Double-click bookkeeping, held HERE because the browser's MatrixAdapter is rebuilt on every
+    # frame and a click asks for a rebuild — so state left on the adapter is gone before the second
+    # click arrives. This is the carrier crymbleui's DirBrowser adapter documents as the host's job.
+    property last_click_file : String? = nil
+    # Show everything, not just what matches the wildcard — a file saved under the wrong extension
+    # is otherwise invisible AND unopenable, with nothing in the dialog to say so.
+    property show_all : Bool = false
+    # The highlighted row: a name (directories carry their trailing "/"), and its index for the
+    # arrow keys. Distinct from `filename`, which is what Ok would accept — selecting a directory
+    # must not put "sub/" in the filename field.
+    getter selected_name : String = ""
+    getter selected_index : Int32 = -1
+    # Set once the dialog has taken focus, so a rebuild does not steal it back mid-typing.
+    property focused_once : Bool = false
+    # Where the keyboard starts. Browsing (Load) wants the LIST, because that is what the arrow
+    # keys drive — they reach the focused widget long before any panel shortcut, so a list you
+    # cannot focus is a list you cannot walk. Naming a file (Save as) wants the text field.
+    property focus_list : Bool = false
 
     @@drives : Array(String)? = nil
 
@@ -315,6 +333,63 @@ class DirBrowser < Base
 
     def select_file(name : String)
         @filename = name
+        @selected_name = name
+        @selected_index = index_of(name)
+    end
+
+    # A directory is selected without being entered, and without touching `filename`.
+    def select_dir(name : String)
+        @selected_name = name
+        @selected_index = index_of(name)
+    end
+
+    # Arrow keys. Moving onto a file fills the name field, the way clicking it does; moving onto a
+    # directory only highlights it.
+    def move_selection(delta : Int32)
+        return if @items.empty?
+        @selected_index = if @selected_index < 0
+                              delta > 0 ? 0 : @items.size - 1
+                          else
+                              (@selected_index + delta).clamp(0, @items.size - 1)
+                          end
+        name, _, _, info = @items[@selected_index]
+        @selected_name = name
+        @filename = name unless info.directory?
+    end
+
+    # Enter. On a directory that means walking into it; on anything else, accepting what the
+    # filename field holds — so Enter after typing a name still does what it always did.
+    def activate_selection
+        activate_index(@selected_index)
+    end
+
+    # Enter on a specific row, which is how the keyboard arrives: the arrow keys move the MATRIX's
+    # own cursor, not this dialog's selection, so the row under that cursor is the one to act on.
+    def activate_index(index : Int32)
+        # `index` is -1 when nothing is selected, and @items[-1]? is the LAST row in Crystal, not
+        # nil — so without this guard "Enter with no selection" quietly accepted the bottom file
+        # of the listing instead of the name in the field.
+        item = index < 0 ? nil : @items[index]?
+        if item.nil?
+            accept
+        elsif item[3].directory?
+            navigate(item[0].rstrip('/'))
+        else
+            select_file(item[0])
+            accept
+        end
+    end
+
+    def create_folder(name : String) : Nil
+        return if name.empty?
+        Dir.mkdir_p(@path / name)
+        refresh
+    rescue ex
+        # A name the filesystem refuses (a stray "/", a permission) is the user's typo, not a crash.
+    end
+
+    private def index_of(name : String) : Int32
+        @items.index { |(n, _, _, _)| n == name } || -1
     end
 
     def accept
@@ -328,15 +403,28 @@ class DirBrowser < Base
         close
     end
 
-    def update(sort_column : Int32 = @sort_column, sort_ascending : Bool = @sort_ascending)
-        # Toggle direction when clicking same column
+    # Re-read the directory, KEEPING the current order. This used to take the sort arguments and
+    # toggle when the column matched, so `update` with no arguments — from the constructor, from
+    # navigate, from the drive buttons — reversed the sort every time: the browser opened
+    # descending and flipped on every folder you walked into.
+    def update
+        refresh
+    end
+
+    # The user clicked a column header: the same column reverses, a different one starts ascending.
+    def sort_by(sort_column : Int32)
         if sort_column == @sort_column
             @sort_ascending = !@sort_ascending
         else
             @sort_column = sort_column
             @sort_ascending = true
         end
+        refresh
+    end
 
+    private def refresh
+        sort_column = @sort_column
+        sort_ascending = @sort_ascending
         if @path.parts.size == 0
             update_drives if @@drives.nil?
             @items = @@drives.not_nil!.map { |el| {el, "", "", File.info(el)} }
@@ -355,7 +443,7 @@ class DirBrowser < Base
                 .map { |el| {el[0] + "/", "", "", el[1]} }
                 .sort { |x, y| x[0] <=> y[0] }
 
-            files = all.select { |el| !el[1].directory? && File.match?(@wildcard, el[0]) }
+            files = all.select { |el| !el[1].directory? && (@show_all || File.match?(@wildcard, el[0])) }
                 .map { |el| {el[0], el[1].size.format.rjust(15), el[1].modification_time.to_s, el[1]} }
 
             col = sort_column.clamp(0, 2)

@@ -360,6 +360,20 @@ class EmbraceApp < CrymbleUI::App
         window_panel(dialog.title, x: 100.0, y: 80.0, width: 700.0, height: 500.0, id: dialog.id) do
             on_closed { dialog.close; request_rebuild }
             register_shortcut("Escape") { dialog.close; request_rebuild }
+            # Enter is the one key a panel shortcut sees FIRST (sfml_renderer.cr: Enter/Space check
+            # panel shortcuts before the focused widget). Arrow keys are the opposite — they go to
+            # the focused widget and then to spatial focus navigation, and never arrive here — so
+            # walking the list is the MATRIX's own cursor, and Enter acts on the row under it.
+            # Registering Up/Down here looked right and fired never.
+            register_shortcut("Enter") do
+                row = -1
+                if (vm = find("#{dialog.id}_files")).is_a?(CrymbleUI::VirtualMatrix)
+                    focused = CrymbleUI::Widget.focus_manager?.try(&.focused?(vm))
+                    row = vm.cursor_rc[0] - 1 if focused # row 0 is the header
+                end
+                row >= 0 ? dialog.activate_index(row) : dialog.activate_selection
+                request_rebuild
+            end
             vstack(spacing: 5.0, padding: 10.0) do
                 hstack(spacing: 1.0) do
                     dialog.path.parts.each_with_index do |part, i|
@@ -388,35 +402,57 @@ class EmbraceApp < CrymbleUI::App
                 adapter.items = dialog.items
                 adapter.sort_column = dialog.sort_column
                 adapter.sort_ascending = dialog.sort_ascending
-                adapter.selected_filename = dialog.filename
+                adapter.selected_name = dialog.selected_name
+                # Re-seed the activation state from the dialog: this adapter is new this frame.
+                adapter.last_click_file = dialog.last_click_file
                 adapter.on_navigate = ->(dirname : String) {
                     dialog.navigate(dirname)
+                    dialog.last_click_file = adapter.last_click_file # cleared by the adapter
+                    request_rebuild
+                    nil
+                }
+                # First click on a directory selects it; the second (on_navigate) enters it.
+                adapter.on_select_dir = ->(name : String) {
+                    dialog.select_dir(name)
+                    dialog.last_click_file = adapter.last_click_file
                     request_rebuild
                     nil
                 }
                 adapter.on_select_file = ->(name : String) {
                     dialog.select_file(name)
+                    # Carry the selection back, or the second click starts from nil and reads as a first.
+                    dialog.last_click_file = adapter.last_click_file
+                    request_rebuild
+                    nil
+                }
+                # The second click on an already-selected file: take it and close.
+                adapter.on_accept = ->(name : String) {
+                    dialog.select_file(name)
+                    dialog.last_click_file = nil
+                    dialog.accept
                     request_rebuild
                     nil
                 }
                 adapter.on_sort = ->(col : Int32) {
-                    dialog.update(col)
+                    dialog.sort_by(col)
                     request_rebuild
                     nil
                 }
+                file_list : CrymbleUI::Widget? = nil
                 expanded do
                     vm = widget(CrymbleUI::VirtualMatrix.new(
                         adapter: adapter,
                         id: "#{dialog.id}_files",
                     ))
                     vm.as(CrymbleUI::VirtualMatrix).show_rulers = false
+                    file_list = vm
                 end
 
                 separator
 
                 hstack(spacing: 5.0) do
                     text("Filename:")
-                    text_input(dialog.filename, id: "#{dialog.id}_filename", width: 400.0,
+                    field = text_input(dialog.filename, id: "#{dialog.id}_filename", width: 400.0,
                         on_event: ->(val : String, ev : CrymbleUI::TextInputEvent) {
                             dialog.filename = val if ev.change?
                             if ev.submit?
@@ -426,8 +462,33 @@ class EmbraceApp < CrymbleUI::App
                             end
                             nil
                         })
+                    # Once, on open: the dialog exists to be typed into. Guarded, or every rebuild
+                    # (one per keystroke, via on_event above) would drag focus back from wherever
+                    # the user put it.
+                    unless dialog.focused_once
+                        dialog.focused_once = true
+                        # The list when browsing, the name field when naming — see Dialogs::DirBrowser.
+                        # The widget itself, not find(): the tree is still being BUILT here, so the
+                        # matrix two containers up is not reachable by id yet.
+                        if dialog.focus_list && (list = file_list)
+                            list.request_focus
+                        else
+                            field.request_focus
+                        end
+                    end
                 end
                 hstack(spacing: 10.0) do
+                    checkbox("All files", checked: dialog.show_all, id: "#{dialog.id}_all_files") do
+                        dialog.show_all = !dialog.show_all
+                        dialog.update
+                        request_rebuild
+                    end
+                    # Takes the name from the field beside it: one text box, two uses, rather than
+                    # a second dialog on top of this one to ask for four characters.
+                    button("New folder", id: "#{dialog.id}_new_folder") do
+                        dialog.create_folder(dialog.filename)
+                        request_rebuild
+                    end
                     button("Ok", id: "#{dialog.id}_ok") { dialog.accept; request_rebuild }
                     button("Cancel", id: "#{dialog.id}_cancel") { dialog.close; request_rebuild }
                 end

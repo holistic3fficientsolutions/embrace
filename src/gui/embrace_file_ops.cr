@@ -26,8 +26,15 @@ class EmbraceApp < CrymbleUI::App
     # Spawn a new Shape pre-selected on the given table. Used by the History
     # changes summary ("→ Shape" button) so the user can inspect a changed
     # table without losing their current Shape configuration.
-    def shape_add_for_table(table_lid : TableLID) : Nil
-        context = @persistency.context.clone
+    #
+    # The context comes from `source` — the Shape whose summary was clicked —
+    # never from `@persistency.context`. The row's counts were read under that
+    # Shape's context, and a per-Shape commit or branch fork leaves the app's
+    # base context behind on another commit (another BRANCH, once a Shape has
+    # forked one), so the app context would open the table on data the clicked
+    # row never described.
+    def shape_add_for_table(source : ShapeState, table_lid : TableLID) : Nil
+        context = source.context.clone
         title = @persistency.display_name(table_lid) # blank -> "(unnamed)"
         shape = ShapeState.new(title, @persistency, context, table_lid)
         @shapes << shape
@@ -90,7 +97,15 @@ class EmbraceApp < CrymbleUI::App
 
     private def do_save_as
         dialog = Dialogs::DirBrowser.new("Save file as...", "*.embrace") do |name|
-            do_save(name)
+            # Picking a name that already exists is the one destructive thing this dialog can do,
+            # and it did it silently. The write itself is atomic, so nothing can be left
+            # half-replaced — but a file that was someone else's work is still gone, with no undo.
+            if File.exists?(name)
+                @pending_confirm = {"#{name} already exists - overwrite it?", ->{ do_save(name); nil }}
+                request_rebuild
+            else
+                do_save(name)
+            end
         end
         add_dialog(dialog)
     end
@@ -230,6 +245,7 @@ class EmbraceApp < CrymbleUI::App
                 request_rebuild
             end
         end
+        dialog.focus_list = true # browsing: the arrows belong to the list
         add_dialog(dialog)
     end
 

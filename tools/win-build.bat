@@ -40,7 +40,11 @@ REM    The vendored SFML/CSFML win32 libs are already static, so the result need
 REM    runtime DLLs. (Also resolves the LNK4098 LIBCMT/CRT-mix warning.)
 REM    -Dgui: GUI subsystem / no console (the shim lives in crymble-ui's
 REM    src/platform/windows_gui.cr). Drop -Dgui for a dev build that keeps a console.
-crystal build src\gui\embrace_main.cr -o bin\embrace.exe --release --no-debug --static -Dgui ^
+REM EMBRACE_EXTRA_FLAGS lets a DIAGNOSTIC build reuse this exact script rather than forking it —
+REM same compiler, same flags, same linker, plus whatever is asked for. The release build sets it
+REM to nothing, so the published .exe is bit-for-bit what it always was.
+REM   set EMBRACE_EXTRA_FLAGS=-Dprobe -Dcache_validation
+crystal build src\gui\embrace_main.cr -o bin\embrace.exe --release --no-debug --static -Dgui %EMBRACE_EXTRA_FLAGS% ^
     --link-flags "%RES%" || (echo build failed & exit /b 1)
 
 echo.
