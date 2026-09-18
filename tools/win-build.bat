@@ -43,7 +43,12 @@ REM    src/platform/windows_gui.cr). Drop -Dgui for a dev build that keeps a con
 REM EMBRACE_EXTRA_FLAGS lets a DIAGNOSTIC build reuse this exact script rather than forking it —
 REM same compiler, same flags, same linker, plus whatever is asked for. The release build sets it
 REM to nothing, so the published .exe is bit-for-bit what it always was.
-REM   set EMBRACE_EXTRA_FLAGS=-Dprobe -Dcache_validation
+REM   set EMBRACE_EXTRA_FLAGS=-Dprobe
+REM NEVER add -Dcache_validation to a build a human will run, which this comment used to
+REM suggest. It is a HEADLESS gate (tools/cv-coherency.sh): one FFI get_pixel call PER PIXEL
+REM per cached layer, twice a frame. Headless that is an array index; on a GPU the first frame
+REM never finishes and you ship a black window with a log that stops after its header. That
+REM cost a round trip to Wolfgang's machine. See src/gui/probe.cr.
 crystal build src\gui\embrace_main.cr -o bin\embrace.exe --release --no-debug --static -Dgui %EMBRACE_EXTRA_FLAGS% ^
     --link-flags "%RES%" || (echo build failed & exit /b 1)
 

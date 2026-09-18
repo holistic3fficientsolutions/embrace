@@ -273,7 +273,12 @@ class EmbraceApp < CrymbleUI::App
                             text("CrymbleUI (version #{CrymbleUI::VERSION}, MIT license)")
                             text("CSFML (version #{SF::VERSION}, Zlib license)")
                             text("SFML (version #{SF::SFML_VERSION}, Zlib license)")
-                            text("Google Cousine-Regular font (version 1.21, Apache 2.0 license)")
+                            # ASKED, not hardcoded. crymbleui ships the font (embedded into our
+                            # binary by its own compile-time read_file), so crymbleui owns what must
+                            # be said about it — this line used to claim "version 1.21, Apache 2.0"
+                            # and went stale the day that font gained a DejaVu glyph under the
+                            # Bitstream Vera licence, which we would never have noticed from here.
+                            CrymbleUI::SFMLRenderer::FONT_ATTRIBUTION.each { |line| text(line) }
                             text("crexcel (version #{Crexcel::VERSION}, MIT license)")
                             text("xlsx-parser (version #{XlsxParser::VERSION}, MIT license)")
                             text("")

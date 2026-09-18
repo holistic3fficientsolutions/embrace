@@ -1,6 +1,7 @@
 require "../spec_helper"
 require "../../src/gui/embrace"
 require "../../src/constants"
+require "../../src/gui/probe"
 
 # DOES SCROLLING DOWN AND BACK UP LEAVE STALE PIXELS? — the real app, a real window, real GPU.
 #
@@ -69,6 +70,7 @@ class Driver
   @grab_checked = false
   @down_sigs = Hash(Int32, Array(String)).new
   @down_offs = Hash(Int32, Float64).new
+  @down_cells = Hash(Int32, String).new
   @mid_bad = 0
   @step_ms = [] of Float64
   @t_last = Time.instant
@@ -90,7 +92,10 @@ class Driver
   private def signature : Array(String)
     m = matrix
     return [] of String unless m
-    lay = m.layer
+    # THE STICKY COLUMN, not the content layer. Every earlier oracle in this hunt read m.layer and
+    # reported "clean" while the rank column was visibly garbling - the fault is on a different
+    # buffer, one the cache validator excludes by design.
+    lay = (sv = m.content_scroll_view) ? sv.sticky_col_layer : nil
     return [] of String unless lay
     be = lay.backend
     return [] of String unless be.is_a?(CrymbleUI::CrSFMLBackend)
@@ -101,8 +106,8 @@ class Driver
     # the composite reads at `scroll_offset - buffer_origin` (layer.cr:243-276). Reading (0,0)
     # blindly compares DIFFERENT CONTENT whenever the buffer has recentred — a difference that is
     # correct behaviour, not staleness. The first cut of this instrument did exactly that.
-    ox = (lay.scroll_offset.x - lay.buffer_origin.x).to_i
-    oy = (lay.scroll_offset.y - lay.buffer_origin.y).to_i
+    ox = 0
+    oy = 0
     # CrSFMLBackend#get_pixels does image.get_pixel(x+dx, y+dy) with NO bounds check, so an
     # out-of-range rect SEGFAULTS the process (observed). Clamp here; the unguarded read is
     # filed separately.
@@ -113,7 +118,7 @@ class Driver
     w = {w, tw - ox}.min
     h = {h, th - oy}.min
     return [] of String if w < 20 || h < 20
-    @last_origin = "scroll=#{lay.scroll_offset.y.round(1)} buffer_origin=#{lay.buffer_origin.y.round(1)} sample_at=#{oy}"
+    @last_origin = "STICKY col layer #{lay.bounds.width.round(0)}x#{lay.bounds.height.round(0)} matrix_scroll=#{m.scroll_offset.y.round(1)}"
     px = be.get_pixels(ox, oy, w, h) # one GPU->CPU transfer per sample
     out = [] of String
     y = 2
@@ -155,6 +160,40 @@ class Driver
     sv = scroll_view.not_nil!
     b = sv.absolute_bounds
     b.x + b.width - 8.0 # centre of the 16px vertical bar
+  end
+
+  # A vertical slice through ONE sticky cell's box: where does the cell actually paint, and where
+  # does the layer background still show? "the cell is there" and "the cell painted its whole box"
+  # are different claims and the pixels settle which.
+  private def slice(tag : String, row : Int32)
+    m = matrix
+    return unless m
+    sv = m.content_scroll_view
+    lay = sv.try &.sticky_col_layer
+    be = lay.try &.backend
+    return unless lay && be.is_a?(CrymbleUI::CrSFMLBackend)
+    cell = m.active_cells.find { |k, _| k[0] == row && k[1] == 0 }
+    return unless cell
+    b = cell[1].bounds
+    x = (b.x + b.width / 2).to_i.clamp(0, be.width - 1)
+    y0 = b.y.to_i.clamp(0, be.height - 1)
+    y1 = (b.y + b.height).to_i.clamp(0, be.height)
+    return if y1 <= y0
+    px = be.get_pixels(x, y0, 1, y1 - y0)
+    runs = [] of String
+    cur = nil; len = 0
+    px.each do |c|
+      k = "#{c.r},#{c.g},#{c.b}"
+      if k == cur
+        len += 1
+      else
+        runs << "#{cur}x#{len}" if cur
+        cur = k; len = 1
+      end
+    end
+    runs << "#{cur}x#{len}" if cur
+    log("  SLICE #{tag} cell #{row},0 box=(#{b.x.round(1)},#{b.y.round(1)} #{b.width.round(1)}x#{b.height.round(1)}) x=#{x} y=#{y0}..#{y1}")
+    log("        #{runs.join(" | ")}")
   end
 
   private def log(s : String)
@@ -254,11 +293,20 @@ class Driver
           log("  plumbing: wheel moved scroll #{s0.round(1)} -> #{m.not_nil!.scroll_offset.y.round(1)} (events DO reach the scroll machinery)")
         end
         m.not_nil!.scroll_offset = CrymbleUI::Vec2.zero
-        @baseline_scroll = 0.0
-        @before = signature
-        @phase = 5
+        # The scroll flush is DEFERRED to pre_render_flush, so one frame after setting an offset the
+        # cells have NOT caught up. Comparing a transient frame against a settled one is precisely
+        # what produced the mid-drag "mismatches": the two captures were of different ROWS at the
+        # same scroll value. Give the flush time before the baseline is taken.
+        @phase = 7
         @frame = 0
       end
+    when 7
+      return unless @frame > 40
+      @baseline_scroll = 0.0
+      @before = signature
+      slice("BASELINE", 3)
+      @phase = 5
+      @frame = 0
     when 5
       return unless @frame > 30
       ctrl = signature
@@ -302,6 +350,9 @@ class Driver
         if @frame % 5 == 0
           @down_sigs[@frame] = signature
           @down_offs[@frame] = m.not_nil!.scroll_offset.y
+          mmd = m.not_nil!
+          @down_cells[@frame] = mmd.active_cells.select { |k, _| k[1] < mmd.sticky_col_count }
+            .map { |k, w| "#{k[0]}@#{w.bounds.y.round(1)}" }.sort.join(" ")
         end
         if @frame == 8 && !@grab_checked
           @grab_checked = true
@@ -337,6 +388,38 @@ class Driver
               if d > 0
                 @mid_bad += 1
                 log("  MID-DRAG MISMATCH at scroll=#{now_off.round(1)} (up #{@frame} vs down #{partner}): #{d}/#{dsig.size} samples differ")
+                mmu = m.not_nil!
+                up_cells = mmu.active_cells.select { |k, _| k[1] < mmu.sticky_col_count }
+                  .map { |k, w| "#{k[0]}@#{w.bounds.y.round(1)}" }.sort.join(" ")
+                dn_cells = @down_cells[partner]? || ""
+                if up_cells == dn_cells
+                  log("    cell sets IDENTICAL -> the difference is in what was PAINTED, not which cells live")
+                else
+                  dset = dn_cells.split(" ").to_set
+                  uset = up_cells.split(" ").to_set
+                  log("    cell sets DIFFER: only-down=#{(dset - uset).to_a.sort.first(6)} only-up=#{(uset - dset).to_a.sort.first(6)}")
+                end
+                # The mid-drag mismatches are the big ones (17-39 of 189) and therefore the closest
+                # thing to what is visible on screen. Dump the first one in full: which pixels, and
+                # which sticky cell owns each.
+                if @mid_bad == 1
+                  mm2 = m.not_nil!
+                  lay3 = mm2.content_scroll_view.try &.sticky_col_layer
+                  lw2 = (lay3.try(&.bounds.width) || 0.0).to_i
+                  per = 0; xc = 2
+                  while xc < lw2 - 2; per += 1; xc += SAMPLE_STEP; end
+                  st = mm2.active_cells.select { |k, _| k[1] < mm2.sticky_col_count }
+                  shown2 = 0
+                  dsig.each_with_index do |bv, ix|
+                    next if ix >= usig.size || bv == usig[ix]
+                    next if shown2 >= 10
+                    pxx = 2 + (ix % per) * SAMPLE_STEP
+                    pyy = 2 + (ix // per) * SAMPLE_STEP
+                    ow = st.find { |_, w| bb = w.bounds; pyy >= bb.y && pyy < bb.y + bb.height }
+                    log("    MD (#{pxx},#{pyy}) down=#{bv} up=#{usig[ix]} -> #{ow ? "cell #{ow[0][0]},0 y=#{ow[1].bounds.y.round(1)} h=#{ow[1].bounds.height.round(1)}" : "no cell"}")
+                    shown2 += 1
+                  end
+                end
               end
             end
           end
@@ -344,6 +427,41 @@ class Driver
       elsif @frame == UP_STEPS + 1
         @app.handle_mouse_up(CrymbleUI::Vec2.new(@drag_x, @drag_y0))
       elsif @frame > UP_STEPS + 20
+        # WHAT differs, not just how many. Four samples out of 189 at rest could be leftover glyphs
+        # or could be antialiasing - the colours say which.
+        aft = signature
+        bef = @before.not_nil!
+        shown = 0
+        # Map each differing sample back to a PIXEL and then to the sticky cell whose bounds contain
+        # it. "A light band near the bottom" is a description; the cell that drew it is a cause.
+        mm = m.not_nil!
+        sv2 = mm.content_scroll_view
+        lay2 = sv2.try &.sticky_col_layer
+        lw = (lay2.try(&.bounds.width) || 0.0).to_i
+        lh = (lay2.try(&.bounds.height) || 0.0).to_i
+        per_row = 0
+        xx = 2
+        while xx < lw - 2
+          per_row += 1
+          xx += SAMPLE_STEP
+        end
+        sticky = mm.active_cells.select { |k, _| k[1] < mm.sticky_col_count }
+        bef.each_with_index do |b, i|
+          next if i >= aft.size || b == aft[i]
+          next if shown >= 8
+          px = 2 + (i % per_row) * SAMPLE_STEP
+          py = 2 + (i // per_row) * SAMPLE_STEP
+          owner = sticky.find do |k, w|
+            bb = w.bounds
+            py >= bb.y && py < bb.y + bb.height && px >= bb.x && px < bb.x + bb.width
+          end
+          own = owner ? "cell #{owner[0][0]},#{owner[0][1]} box=(#{owner[1].bounds.x.round(1)},#{owner[1].bounds.y.round(1)} #{owner[1].bounds.width.round(1)}x#{owner[1].bounds.height.round(1)})" : "NO CELL COVERS THIS PIXEL"
+          log("  DIFF (#{px},#{py}) before=#{b} after=#{aft[i]} -> #{own}")
+          shown += 1
+        end
+        log("  sticky cells now: " + sticky.keys.sort.map { |k| "#{k[0]}@#{sticky[k].bounds.y.round(1)}h#{sticky[k].bounds.height.round(1)}" }.first(10).join(" "))
+        log("  layer #{lw}x#{lh}, per_row_samples=#{per_row}")
+        slice("AFTER", 3)
         final_scroll = m.not_nil!.scroll_offset.y
         if (final_scroll - @baseline_scroll).abs > 0.5
           log("INSTRUMENT FAILURE: ended at scroll=#{final_scroll.round(1)} but the baseline was #{@baseline_scroll.round(1)} — "\
@@ -417,6 +535,7 @@ renderer = CrymbleUI::SFMLRenderer.new(
   height: window_widget.height,
   title: window_widget.title
 )
+{% if flag?(:probe) %} EmbraceProbe.start(app) {% end %}
 driver = Driver.new(app, shape, renderer)
 # A repeating timer drives the gesture. (LayerRenderer.probe_sampler, used by the older autotests
 # in this directory, no longer exists — those files are stale against the current library.)

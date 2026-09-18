@@ -34,6 +34,8 @@ pki-root-ca.json
 /package-lock.json
 /.claude/
 
-# pre-push-Hook (extensionslos, sonst von "*" oben ignoriert)
+# Git-Hooks (extensionslos, sonst von "*" oben ignoriert). Jeder neue Hook braucht hier eine
+# Zeile -- sonst installiert bootstrap.sh ihn aus einer Datei, die es im Klon nicht gibt.
 !/scripts/githooks/pre-push
+!/scripts/githooks/pre-commit
 shard.lock
