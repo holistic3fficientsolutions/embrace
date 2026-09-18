@@ -38,4 +38,7 @@ pki-root-ca.json
 # Zeile -- sonst installiert bootstrap.sh ihn aus einer Datei, die es im Klon nicht gibt.
 !/scripts/githooks/pre-push
 !/scripts/githooks/pre-commit
+# Internal tooling: tracked so it survives a reboot and a fresh clone, but scripts/ is
+# export-ignore (.gitattributes), so it never reaches the public release.
+!/scripts/gh-info.sh
 shard.lock

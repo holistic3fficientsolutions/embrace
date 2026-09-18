@@ -35,14 +35,24 @@ every change is a commit you can branch, diff, and travel back through.
 
 ## Download
 
-Pre-built binaries (Linux `.AppImage`, Windows `.exe`) are attached to each
-[GitHub Release](https://github.com/holistic3fficientsolutions/embrace/releases) and mirrored at **[h3o.de](https://h3o.de)**.
-Both are self-contained: the Windows `.exe` is static, and the Linux `.AppImage`
-bundles its SFML/CSFML and other non-system libraries (host graphics libs such as
-libGL come from the system, per the AppImage convention). Make it executable and
-run it — `chmod +x embrace-linux-x86_64.AppImage && ./embrace-linux-x86_64.AppImage`
-(needs libfuse2; on systems with only fuse3, run with `--appimage-extract-and-run`).
-(Binaries are not kept in the repository.)
+Pre-built binaries are attached to each
+[GitHub Release](https://github.com/holistic3fficientsolutions/embrace/releases)
+and mirrored at **[h3o.de](https://h3o.de)**. Both are self-contained: there is
+nothing to install alongside them.
+
+**Windows** — `embrace-windows-x64.exe`, statically linked. Download and run.
+
+**Linux** — `embrace-linux-x86_64.AppImage`, which bundles SFML/CSFML and the
+other non-system libraries it needs (host graphics libraries such as `libGL`
+come from the system, per the AppImage convention):
+
+```sh
+chmod +x embrace-linux-x86_64.AppImage
+./embrace-linux-x86_64.AppImage
+```
+
+The AppImage needs `libfuse2`; on systems that ship only fuse3, run it with
+`--appimage-extract-and-run`.
 
 ## Build from Source
 
@@ -53,15 +63,26 @@ framework, rendered with SFML.
 **Requirements**
 
 - Crystal `>= 1.20.0`
-- SFML and its development headers (see your platform notes below)
+- On Linux, the X11 and graphics runtime libraries your distribution already
+  ships (`libX11`, `libXcursor`, `libXrandr`, `libXi`, `libfreetype`, `libudev`,
+  …). You do **not** need system SFML packages: crymble-ui vendors SFML 3 /
+  CSFML 3, and `shards install` brings them in with it.
 
 **Build**
 
 ```sh
-shards install
+shards install                  # fetches crymble-ui and its vendored SFML/CSFML
+source setup.sh                 # puts those libraries on the build and run paths
 shards build embrace            # or: shards build --release embrace
 ./bin/embrace
 ```
+
+`setup.sh` has to be sourced **after** `shards install`, because it delegates to
+`lib/crymble-ui/setup.sh` — the GUI library owns the vendored libraries and is the
+single source of truth for the build environment. Source it in any shell that
+builds **or runs** the binary: a local build links against those libraries rather
+than bundling them, so without it `./bin/embrace` cannot find
+`libcsfml-graphics.so`. (Bundling is exactly what the AppImage does for end users.)
 
 Linux is the primary build target and is what CI exercises.
 

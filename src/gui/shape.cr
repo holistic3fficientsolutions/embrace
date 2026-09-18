@@ -372,8 +372,14 @@ class SimpleMatrixAdapter(T, U, V)
             # no-op unless auto-sizing is on, which keeps the flag in ONE place instead of two.
             # Attached after construction via the setter, so the four-way construction below
             # does not double.
-            fit_on_change = ->(v : String, ev : CrymbleUI::TextInputEvent) {
-                if ev.change?
+            fit_on_edit = ->(v : String, ev : CrymbleUI::TextInputEvent) {
+                # Cancel as well as Change: Escape abandons the typed value and restores the one
+                # the cell had on focus, and `notify_cancel` fires AFTER that restore — so `v` is
+                # already the value the cell is going back to. Without this the line kept the size
+                # the abandoned text asked for: a column stayed as wide (and a row as tall) as an
+                # edit the user explicitly threw away. The shrink costs nothing extra — it is the
+                # same recorded runner-up that makes every other shrink O(1).
+                if ev.change? || ev.cancel?
                     if vm = @virtual_matrix
                         font_size = CrymbleUI::FontSizing.calculate_size(0)
                         vm.fit_cell_to_content(row, col,
@@ -392,7 +398,7 @@ class SimpleMatrixAdapter(T, U, V)
                 CrymbleUI::TextInput.new(value: cell_text, mode: CrymbleUI::TextInputMode::QuickEntry, text_color: text_color, multiline: ml)
             else
                 CrymbleUI::TextInput.new(value: cell_text, mode: CrymbleUI::TextInputMode::QuickEntry, multiline: ml)
-            end.tap { |ti| ti.on_event = fit_on_change }
+            end.tap { |ti| ti.on_event = fit_on_edit }
         end
     end
 
@@ -1726,8 +1732,27 @@ class ShapeState
     def drill_from_cell(index : {Int32, Int32}) : ShapeState?
         rc = @matrix_userdata_rc
         return nil unless rc
-        return nil unless rc.get_assignability(index.to_a) == Table::Lazy::Pivot::Assignability::Drilldown
-        clusters = rc.get_cell_clusters(index.to_a)
+        # Reads of this Shape's own pivot belong in this Shape's context, like every other one
+        # (SimpleMatrixAdapter#with_shape_context): the base context does not see commits made by
+        # the Shape, so from outside it a drillable cell can read as non-drillable.
+        #
+        # It is also what keeps the pivot's cache stable. `Hierarchic` caches exactly ONE version
+        # and that version is context-dependent, so a read from the wrong side of this boundary
+        # invalidates it and forces a full O(total rows) rebuild — once on the way out, and once
+        # more when the next in-context read puts it back, to a hierarchy it already had. Nothing
+        # in the data changed. `on_cell_activate` runs this probe on EVERY typed character, which
+        # is what made press-and-hold typing stall while backspace stayed fluid.
+        #
+        # `ensure`, not a bare pop, because the guard below returns early for every non-Drilldown
+        # cell — i.e. almost always — and a leaked push leaves the ContextStack one frame deeper
+        # for the rest of the session.
+        @persistency.contexts.push(@context)
+        begin
+            return nil unless rc.get_assignability(index.to_a) == Table::Lazy::Pivot::Assignability::Drilldown
+            clusters = rc.get_cell_clusters(index.to_a)
+        ensure
+            @context = @persistency.contexts.pop
+        end
         new_shape = dup_shape("#{@title} ▸ drill")
         new_shape.fieldlist_normalize!
         clusters.each do |col_idx, value_rank|

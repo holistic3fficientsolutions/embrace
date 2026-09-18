@@ -181,6 +181,171 @@ describe "auto-size perspective cells" do
         live.active_cells[rc].bounds.width.should be > before
     end
 
+    # Cancelling an edit must put the line back the way it was.
+    #
+    # While the mode is on, the value being TYPED drives the line's size (the `fit_on_edit` hook
+    # in shape.cr). Escape abandons that value and restores the one the cell had on focus — but
+    # the size it grew to was never told, so the column stayed as wide (and the row as tall) as
+    # the abandoned text needed. Field report 2026-09-18: "auto-size, when I edit a cell and make
+    # it larger (any dimension) - and then cancel edit: row/col sizes are left from last edit,
+    # not properly undone."
+    #
+    # Each example asserts the LAID-OUT cell and carries the grow as its own control, so it
+    # cannot pass by auto-size doing nothing at all.
+    it "gives the column its width back when the edit is CANCELLED" do
+        app = make_sized_app
+        renderer = CrymbleUI::Testing::TestRenderer.new(1200, 800)
+        renderer.settle_rendering(app)
+        shape = app.shapes.first
+        adapter = shape.matrix_adapter.not_nil!
+        app.find(toggle_id(shape)).not_nil!.as(CrymbleUI::MenuItem).trigger_click
+        renderer.settle_rendering(app)
+
+        rc = data_cell(adapter, "b").not_nil!
+        before = adapter.virtual_matrix.not_nil!.active_cells[rc].bounds.width
+
+        vm = adapter.virtual_matrix.not_nil!
+        vm.set_cursor_from_cell(rc)
+        "a value far longer than anything else in this column, by a wide margin".each_char { |ch| vm.on_text_input(ch) }
+        renderer.settle_rendering(app)
+        grown = adapter.virtual_matrix.not_nil!.active_cells[rc].bounds.width
+        grown.should be > before # control: the edit really did widen the column
+
+        adapter.virtual_matrix.not_nil!.on_key_down(SF::Keyboard::Key::Escape, false, false)
+        renderer.settle_rendering(app)
+
+        # The abandoned text is gone, so the width it asked for must be gone with it — back to
+        # what the column's remaining content needs (here: the long value two rows up).
+        adapter.cell_read(rc).to_s.should eq("b") # the cancel really did revert the value
+        adapter.virtual_matrix.not_nil!.active_cells[rc].bounds.width.should eq(before)
+    end
+
+    it "gives the row its height back when a multi-line edit is CANCELLED" do
+        app = make_sized_app
+        renderer = CrymbleUI::Testing::TestRenderer.new(1200, 800)
+        renderer.settle_rendering(app)
+        shape = app.shapes.first
+        adapter = shape.matrix_adapter.not_nil!
+        app.find(toggle_id(shape)).not_nil!.as(CrymbleUI::MenuItem).trigger_click
+        renderer.settle_rendering(app)
+
+        rc = data_cell(adapter, "b").not_nil!
+        before = adapter.virtual_matrix.not_nil!.active_cells[rc].bounds.height
+
+        vm = adapter.virtual_matrix.not_nil!
+        vm.set_cursor_from_cell(rc)
+        vm.on_text_input('x')
+        3.times { vm.on_key_down(SF::Keyboard::Key::Enter, false, false, true); vm.on_text_input('y') } # Alt+Enter
+        renderer.settle_rendering(app)
+        grown = adapter.virtual_matrix.not_nil!.active_cells[rc].bounds.height
+        grown.should be > before # control: the edit really did grow the row
+
+        adapter.virtual_matrix.not_nil!.on_key_down(SF::Keyboard::Key::Escape, false, false)
+        renderer.settle_rendering(app)
+
+        adapter.cell_read(rc).to_s.should eq("b")
+        adapter.virtual_matrix.not_nil!.active_cells[rc].bounds.height.should eq(before)
+    end
+
+    it "gives a NARROWED column its width back too, or the restored value is left cut off" do
+        # The mirror of the report, and the worse half: typing into the cell that HOLDS the
+        # column's width (QuickEntry replaces the whole value) narrows the column, so a cancel
+        # that does not re-fit leaves the restored — long — value drawn in a column sized for the
+        # short one it replaced. Same hook, the grow branch of it.
+        app = make_sized_app
+        renderer = CrymbleUI::Testing::TestRenderer.new(1200, 800)
+        renderer.settle_rendering(app)
+        shape = app.shapes.first
+        adapter = shape.matrix_adapter.not_nil!
+        app.find(toggle_id(shape)).not_nil!.as(CrymbleUI::MenuItem).trigger_click
+        renderer.settle_rendering(app)
+
+        rc = data_cell(adapter, "a considerably longer value than the others").not_nil!
+        before = adapter.virtual_matrix.not_nil!.active_cells[rc].bounds.width
+
+        vm = adapter.virtual_matrix.not_nil!
+        vm.set_cursor_from_cell(rc)
+        vm.on_text_input('x') # QuickEntry: replaces the whole value
+        renderer.settle_rendering(app)
+        adapter.virtual_matrix.not_nil!.active_cells[rc].bounds.width.should be < before # control
+
+        adapter.virtual_matrix.not_nil!.on_key_down(SF::Keyboard::Key::Escape, false, false)
+        renderer.settle_rendering(app)
+
+        adapter.cell_read(rc).to_s.should eq("a considerably longer value than the others")
+        adapter.virtual_matrix.not_nil!.active_cells[rc].bounds.width.should eq(before)
+    end
+
+    it "KEEPS the new size when the edit is committed (so the two above cannot pass by reverting everything)" do
+        app = make_sized_app
+        renderer = CrymbleUI::Testing::TestRenderer.new(1200, 800)
+        renderer.settle_rendering(app)
+        shape = app.shapes.first
+        adapter = shape.matrix_adapter.not_nil!
+        app.find(toggle_id(shape)).not_nil!.as(CrymbleUI::MenuItem).trigger_click
+        renderer.settle_rendering(app)
+
+        rc = data_cell(adapter, "b").not_nil!
+        before = adapter.virtual_matrix.not_nil!.active_cells[rc].bounds.width
+
+        vm = adapter.virtual_matrix.not_nil!
+        vm.set_cursor_from_cell(rc)
+        "a value far longer than anything else in this column, by a wide margin".each_char { |ch| vm.on_text_input(ch) }
+        vm.on_key_down(SF::Keyboard::Key::Enter, false, false)
+        renderer.settle_rendering(app)
+
+        adapter.virtual_matrix.not_nil!.active_cells[rc].bounds.width.should be > before
+    end
+
+    # Stepping a Shape through its history re-measures too.
+    #
+    # The sizes have to follow the DATA, not just the editor. Alt+Left / the "<" button move the
+    # Shape to an earlier commit, and the values in the grid change wholesale — so a column left
+    # at the width of a value that commit never had is showing a size for content that is not
+    # there. Driven through the button, because the wiring is the feature.
+    it "re-measures the column when the Shape steps back through history" do
+        app = make_sized_app
+        renderer = CrymbleUI::Testing::TestRenderer.new(1200, 800)
+        renderer.settle_rendering(app)
+        shape = app.shapes.first
+        adapter = shape.matrix_adapter.not_nil!
+        app.find(toggle_id(shape)).not_nil!.as(CrymbleUI::MenuItem).trigger_click
+        renderer.settle_rendering(app)
+
+        rc = data_cell(adapter, "b").not_nil!
+
+        # Two commits, each wider than the last, so stepping back lands on REAL content whose
+        # width is known — not on the degenerate empty state before the table existed.
+        vm = adapter.virtual_matrix.not_nil!
+        vm.set_cursor_from_cell(rc)
+        "a middling value, wider than b".each_char { |ch| vm.on_text_input(ch) }
+        vm.on_key_down(SF::Keyboard::Key::Enter, false, false)
+        renderer.settle_rendering(app)
+        narrow = adapter.virtual_matrix.not_nil!.active_cells[rc].bounds.width
+
+        # Close the commit, or both edits land in the same open one and stepping back goes to
+        # before the table had any content at all.
+        shape.do_commit
+        app.request_rebuild
+        renderer.settle_rendering(app)
+
+        vm = adapter.virtual_matrix.not_nil!
+        vm.set_cursor_from_cell(rc)
+        "a value far longer than anything else in this column, by a wide margin".each_char { |ch| vm.on_text_input(ch) }
+        vm.on_key_down(SF::Keyboard::Key::Enter, false, false)
+        renderer.settle_rendering(app)
+        wide = adapter.virtual_matrix.not_nil!.active_cells[rc].bounds.width
+        wide.should be > narrow # control: the second commit really did widen the column
+
+        app.find("hist_back_#{shape.id}").not_nil!.as(CrymbleUI::Button).trigger_click
+        renderer.settle_rendering(app)
+
+        # Back on the first edit: the cell holds the middling value again, so the column must be
+        # the width THAT needs — not the one the abandoned-from commit asked for.
+        adapter.cell_read(rc).to_s.should eq("a middling value, wider than b")
+        adapter.virtual_matrix.not_nil!.active_cells[rc].bounds.width.should eq(narrow)
+    end
+
     it "refuses the drag while on — the mode owns every line's size, including the record column" do
         app = make_sized_app
         renderer = CrymbleUI::Testing::TestRenderer.new(1200, 800)

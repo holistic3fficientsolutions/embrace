@@ -229,9 +229,15 @@ the panel has gets its room, and the panel scrolls to the rest — the Shape doe
 to fit one cell. With the drag handles withdrawn from the sized lines, resizing the Shape's panel
 (or **Maximize**) is how you see more of the grid at once.
 
-**A cell you are typing into grows as you type.** That is the point of the mode: the value stays
-readable while you write it, instead of scrolling away past the right edge. It only grows
-mid-edit — the shrink, if the value ends up shorter, happens when you commit.
+**A cell you are typing into is sized as you type.** That is the point of the mode: the value
+stays readable while you write it, instead of scrolling away past the right edge. It follows the
+value in both directions — shorten what you are typing and the line narrows again as you go, down
+to whatever the rest of the column still needs.
+
+**Cancel the edit and the size goes back with the value.** `Escape` restores what the cell held
+when you started, and the line is re-fitted to that — so an edit you threw away leaves nothing
+behind in the layout, neither a column still wide for text that is gone nor a column still narrow
+for the value that came back. Committing, of course, keeps the size the committed value needs.
 
 **Limits, and what they look like.** There is no ceiling on how wide a column or how tall a row
 the mode will make: a value gets the room it needs and you scroll to the rest of the sheet. It

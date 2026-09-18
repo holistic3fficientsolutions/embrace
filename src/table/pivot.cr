@@ -901,9 +901,14 @@ class Table::Lazy::Pivot::Hierarchic(T,U,V) < Table::Lazy::Raw::Base(T)
         update
         @version.not_nil!
     end
+    # Instrumentation: how many times the full hierarchy (tree + offsets + projections) was rebuilt.
+    # A rebuild is O(rows); a stable version must not produce one.
+    class_property rebuild_count : Int64 = 0_i64
+
     private def update # the update mechanism, should be called at the beginning in every method that gets/sets some data
         version = @parent.version + @fields.version
         if !is_multiassign? && (version != @version)
+            Hierarchic.rebuild_count += 1
             @constrained_references.clear
             parse_fieldlist
             # first, construct hierarchy tree top-down

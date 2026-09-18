@@ -58,6 +58,32 @@ The lazy `update` method:
 
 4. **`calc_projections`** — computes scroll ordering priorities
 
+### The update is all-or-nothing, and the cache holds exactly one version
+
+Steps 1-4 rebuild the WHOLE hierarchy, so `update` is O(total rows) — there is no partial
+or incremental path. It is guarded by a single cached `@version`, compared against
+`@parent.version + @fields.version`, and a mismatch rebuilds everything.
+
+Two consequences that are easy to get wrong:
+
+- **`#version` is not a peek — it calls `update`.** Reading it to "check whether anything
+  changed" can itself perform the full rebuild.
+- **That version sum is context-dependent**, because both inputs are read through the
+  persistency `ContextStack`: a Shape's context sees commits the base context does not.
+  The same pivot object therefore reports *different* versions depending on which context
+  is current — so **every read of one pivot must happen in one context**. A read that
+  escapes the boundary invalidates the cache and rebuilds the hierarchy on the way out,
+  and the next in-context read rebuilds it right back — to a hierarchy it already had,
+  with nothing in the data changed.
+
+  In the GUI that boundary is `SimpleMatrixAdapter#with_shape_context`, which every read of
+  a Shape's pivot goes through. `ShapeState#drill_from_cell` did not, and because
+  `on_cell_activate` probes it on **every typed character**, each keystroke paid two full
+  rebuilds: at 2561 rows that is ~33 ms each, i.e. 69-77 ms per key against a 30 ms
+  autorepeat — typing fell behind and stalled while backspace, which never crosses the
+  boundary, stayed fluid. Fixed 2026-09-18; regression-tested by counting rebuilds in
+  `spec/gui/cell_edit_pivot_rebuild_spec.cr`.
+
 ## Index Mapping
 
 `map_index(index)` is the central method — it converts a flat 2D `[row, col]` index
