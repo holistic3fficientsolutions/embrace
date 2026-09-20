@@ -49,6 +49,12 @@ class EmbraceApp < CrymbleUI::App
 
     # Theme state
     @dark_theme : Bool = true
+    # View > "Shape config on one page". ON (default) is the layout embrace has always had:
+    # config sits directly above the perspective, so a change and its effect are visible in the
+    # same frame — which is what makes a screenshot or a video teach. OFF moves config to its own
+    # tab and gives the perspective the whole panel. Session-only, like the theme: opening a file
+    # always starts in the teaching layout.
+    @shape_config_one_page : Bool = true
 
     # Statusbar state
     @statusbar_text : String = ""
@@ -222,6 +228,12 @@ class EmbraceApp < CrymbleUI::App
                     zoom_in_item.on_click_action = -> { CrymbleUI::FontSizing.zoom_in; root.try &.mark_needs_layout; nil }
                     zoom_out_item = menu_item("Zoom out", "^-")
                     zoom_out_item.on_click_action = -> { CrymbleUI::FontSizing.zoom_out; root.try &.mark_needs_layout; nil }
+                    menu_item("Shape config on one page",
+                        checked: @shape_config_one_page,
+                        id: "shape_config_one_page") do
+                        @shape_config_one_page = !@shape_config_one_page
+                        request_rebuild
+                    end
                     menu_item("Dark Theme", checked: @dark_theme) do
                         @dark_theme = !@dark_theme
                         CrymbleUI::Theme.set(@dark_theme ? :dark : :light)
@@ -523,34 +535,65 @@ class EmbraceApp < CrymbleUI::App
             end
 
             vstack(spacing: 5.0, padding: 5.0) do
-                # History selection
-                build_history_section(shape)
+                if @shape_config_one_page
+                    # History above everything, as it has always been.
+                    build_history_section(shape)
 
-                separator
+                    separator
+                end
 
-                # Table selection
-                build_table_section(shape)
+                if @shape_config_one_page
+                    # One page: config above the perspective, so changing a field and seeing the
+                    # grid answer happens in one frame and one screenshot.
+                    build_config_sections(shape)
 
-                separator
+                    separator
 
-                # Configuration (VHTree)
-                build_configurator_section(shape)
-
-                separator
-
-                # Fieldlist
-                build_fieldlist_section(shape)
-
-                separator
-
-                # Filter (autofilter-style row filtering)
-                build_filter_section(shape)
-
-                separator
-
-                # Matrix (data grid) — fills remaining panel space
-                expanded do
-                    build_matrix_section(shape)
+                    # Matrix (data grid) — fills remaining panel space
+                    expanded do
+                        build_matrix_section(shape)
+                    end
+                else
+                    # Tab mode: the perspective gets the whole panel. History stays ABOVE the
+                    # strip — it is navigation, and its effect on the grid is as immediate as the
+                    # configurator's, so hiding it would cost the very thing the one-page layout
+                    # protects. Both pages are built, so the config tab's widgets stay findable
+                    # and its keyboard shortcuts keep firing while the perspective is forward.
+                    expanded do
+                        tabs(id: "shape_tabs_#{shape.id}") do
+                            tab("Perspective") do
+                                expanded do
+                                    # No "Perspective" tree node here: the tab is already
+                                    # labelled, and a second label saying the same word costs a
+                                    # line of the grid's height to say nothing.
+                                    build_matrix_section(shape, framed: false)
+                                end
+                            end
+                            tab("Config") do
+                                # Everything scrolls together, history included. That needed the
+                                # changes table to stop being a VirtualMatrix first: a widget
+                                # that owns layers cannot scroll inside a ScrollView, because the
+                                # ScrollView offsets its own cached buffer and a child layer
+                                # never draws into it — which is why the table sat nailed in
+                                # place while its neighbours moved. It is a RecursiveGrid now,
+                                # plain widgets, so one scrollbar serves the whole tab.
+                                expanded do
+                                    # keep_content_width: this column of controls scrolls
+                                    # vertically, so it cannot scroll sideways — without the
+                                    # floor the panel shrinks past the config and squeezes it to
+                                    # stubs ("Allocations" down to "Allo"). One page keeps its
+                                    # floor because nothing cuts the chain there; this puts it
+                                    # back for the tab.
+                                    scroll_view(id: "shape_config_scroll_#{shape.id}",
+                                                spacing: 5.0, keep_content_width: true) do
+                                        build_history_section(shape, open: true)
+                                        separator
+                                        build_config_sections(shape, open: true)
+                                    end
+                                end
+                            end
+                        end
+                    end
                 end
 
                 # Diff-Shape only: flat list of records that exist at parent
@@ -562,8 +605,24 @@ class EmbraceApp < CrymbleUI::App
         end
     end
 
-    private def build_history_section(shape : ShapeState) : Nil
-        tn = tree_node("History selection", id: "history_#{shape.id}") do
+    # The config half of a Shape panel, in one place: the one-page layout and the config tab must
+    # show the same things in the same order, and two copies would drift the first time one gains
+    # a section.
+    # `open`: in tab mode every section starts open. The Config tab has the whole panel, so a
+    # section that needs a click before it says anything is just a click. They stay collapsible —
+    # TreeNode reconciles, so a section the user folds away stays folded.
+    private def build_config_sections(shape : ShapeState, open : Bool = false) : Nil
+        build_table_section(shape) # always open, in either layout
+        separator
+        build_configurator_section(shape, open: open)
+        separator
+        build_fieldlist_section(shape, open: open)
+        separator
+        build_filter_section(shape, open: open)
+    end
+
+    private def build_history_section(shape : ShapeState, open : Bool = false) : Nil
+        tn = tree_node("History selection", expanded: open, id: "history_#{shape.id}") do
             hstack(spacing: 5.0) do
                 text("Branch:")
                 branch_names = shape.branch_names
@@ -628,8 +687,9 @@ class EmbraceApp < CrymbleUI::App
 
             # Pending-changes summary: one row per touched table, sorted by
             # name, with columns (checkbox+name | +R | +F | cells | → Shape).
-            # Wrapped in a scroll_view so the history section stays bounded
-            # when many tables are touched (defaults to ~200px height).
+            # A layer-free recursive_grid, NOT a matrix in its own scroll_view: the whole Config
+            # tab scrolls as one page, and a second scrolling layer inside it would put the rows
+            # in a coordinate space of their own (crymbleui docs/RENDERING_LAWS.md).
             if shape.is_last_commit?
                 @persistency.contexts.push(shape.context)
                 changes = @persistency.changes_in_open_commit
@@ -662,47 +722,56 @@ class EmbraceApp < CrymbleUI::App
                         request_rebuild
                     end
                 end
-                # Sugared VirtualMatrix with sticky header, size-to-content
-                # (200 px cap), content-fit columns.
-                matrix(id: "changes_#{shape.id}", max_height: 200.0) do |m|
-                    m.header "", "Table", "Records", "Fields", "Cells", ""
+                # A layer-free grid, deliberately: this used to be a sugared VirtualMatrix, and a
+                # VirtualMatrix OWNS LAYERS. A ScrollView scrolls by offsetting its own cached
+                # buffer, which a child layer never draws into — so inside the Config tab's
+                # scroll area the table sat nailed in place while everything around it moved
+                # ("history table is drawn absolutely"). RecursiveGrid aligns its columns the
+                # same way and is plain widgets, so it scrolls with its neighbours, needs no
+                # scrollbar of its own, and its cells are reachable by `find` instead of only
+                # through the matrix's virtualised active_cells.
+                recursive_grid(id: "changes_#{shape.id}", spacing: 4.0) do
+                    rows = [] of Array(CrymbleUI::Widget)
+                    rows << ["", "Table", "Records", "Fields", "Cells", ""].map do |h|
+                        text(h, color: CrymbleUI::Theme.current.input_placeholder).as(CrymbleUI::Widget)
+                    end
                     named_changes.each do |table_lid, table_name, tc|
                         captured_table_lid = table_lid
                         captured_shape = shape
                         captured_shape_id = shape.id
                         checked = !@commit_deferred.includes?({captured_shape_id, captured_table_lid})
-                        # git-style +/- for records and fields. Cells stay as
-                        # a single counter — value-edit semantics don't have a
-                        # natural add/remove split.
+                        # git-style +/- for records and fields. Cells stay as a single counter —
+                        # value-edit semantics don't have a natural add/remove split.
                         r_str = format_added_removed(tc.records_added, tc.records_removed)
                         f_str = format_added_removed(tc.fields_added, tc.fields_removed)
                         c_str = tc.cells_changed > 0 ? tc.cells_changed.to_s : ""
-                        m.row do |r|
-                            r << CrymbleUI::Checkbox.new(text: "", checked: checked, id: "changes_check_#{captured_shape_id}_#{captured_table_lid}") do
+                        rows << [
+                            CrymbleUI::Checkbox.new(text: "", checked: checked, id: "changes_check_#{captured_shape_id}_#{captured_table_lid}") do
                                 if checked
                                     @commit_deferred.add({captured_shape_id, captured_table_lid})
                                 else
                                     @commit_deferred.delete({captured_shape_id, captured_table_lid})
                                 end
                                 request_rebuild
-                            end.as(CrymbleUI::Widget)
-                            r.text(table_name)
-                            r.text(r_str)
-                            r.text(f_str)
-                            r.text(c_str)
-                            r << CrymbleUI::Button.new("→ Shape", padding: 3.0, id: "changes_to_shape_#{captured_shape_id}_#{captured_table_lid}") do
+                            end.as(CrymbleUI::Widget),
+                            text(table_name).as(CrymbleUI::Widget),
+                            text(r_str).as(CrymbleUI::Widget),
+                            text(f_str).as(CrymbleUI::Widget),
+                            text(c_str).as(CrymbleUI::Widget),
+                            CrymbleUI::Button.new("→ Shape", padding: 3.0, id: "changes_to_shape_#{captured_shape_id}_#{captured_table_lid}") do
                                 shape_add_for_table(captured_shape, captured_table_lid)
-                            end.as(CrymbleUI::Widget)
-                        end
+                            end.as(CrymbleUI::Widget),
+                        ]
                     end
+                    rows
                 end
             end
         end
         tn.children.first?.try &.hover_text = "Select history branch and/or generation in it ('H' in Shape)"
     end
 
-    private def build_table_section(shape : ShapeState) : Nil
-        tn = tree_node("Table selection", expanded: true, id: "table_#{shape.id}") do
+    private def build_table_section(shape : ShapeState, open : Bool = true) : Nil
+        tn = tree_node("Table selection", expanded: open, id: "table_#{shape.id}") do
             picker = shape.widget_table_picker
             hstack(spacing: 5.0) do
                 text("Table:")
@@ -736,8 +805,8 @@ class EmbraceApp < CrymbleUI::App
         tn.children.first?.try &.hover_text = "Select initial table for upcoming exploration"
     end
 
-    private def build_configurator_section(shape : ShapeState) : Nil
-        tn = tree_node("Configuration", id: "config_#{shape.id}") do
+    private def build_configurator_section(shape : ShapeState, open : Bool = false) : Nil
+        tn = tree_node("Configuration", expanded: open, id: "config_#{shape.id}") do
             if shape.vhtree_adapter
                 build_vhtree(shape)
             else
@@ -896,8 +965,8 @@ class EmbraceApp < CrymbleUI::App
         end
     end
 
-    private def build_fieldlist_section(shape : ShapeState) : Nil
-        tn = tree_node("Field list", id: "fieldlist_#{shape.id}") do
+    private def build_fieldlist_section(shape : ShapeState, open : Bool = false) : Nil
+        tn = tree_node("Field list", expanded: open, id: "fieldlist_#{shape.id}") do
             if adapter = shape.fieldlist_adapter
                 vstack(spacing: 5.0) do
                     hstack(spacing: 5.0) do
@@ -930,8 +999,8 @@ class EmbraceApp < CrymbleUI::App
         value.is_a?(ReferenceCell) ? value.value.to_s : value.to_s
     end
 
-    private def build_filter_section(shape : ShapeState) : Nil
-        tn = tree_node("Filter", id: "filter_#{shape.id}") do
+    private def build_filter_section(shape : ShapeState, open : Bool = false) : Nil
+        tn = tree_node("Filter", expanded: open, id: "filter_#{shape.id}") do
             if shape.matrix_adapter
                 names = shape.column_names
                 existing = shape.filter_state.map(&.column_index).to_set
@@ -1067,67 +1136,80 @@ class EmbraceApp < CrymbleUI::App
         end
     end
 
-    private def build_matrix_section(shape : ShapeState) : Nil
+    # `framed`: whether to wrap the grid in its own "Perspective" tree node. On one page it earns
+    # its heading — it is one section among several. On its own tab the tab is already labelled
+    # "Perspective", and repeating the word costs a line of the grid's height to say nothing.
+    private def build_matrix_section(shape : ShapeState, framed : Bool = true) : Nil
+        unless framed
+            build_matrix_body(shape)
+            return
+        end
         tn = tree_node("Perspective", expanded: true, id: "matrix_#{shape.id}") do
-            if shape.matrix_adapter
-                vstack(spacing: 5.0) do
-                    hstack(spacing: 5.0) do
-                        button("Add field", padding: 3.0, id: "mx_addf_#{shape.id}") { shape.add_field_simple; request_rebuild }
-                        button("...", padding: 3.0, id: "mx_addf_dlg_#{shape.id}") do
-                            dialog = Dialogs::AddField.new("Add new field", shape.persistency, shape.context) do |name, ref_field_lid|
-                                shape.add_field_custom(name, ref_field_lid)
-                                request_rebuild
-                            end
-                            add_dialog(dialog)
-                        end
-                        button("Add record", padding: 3.0, id: "mx_addr_#{shape.id}") { shape.add_record; request_rebuild }
-                    end
-
-                    # Matrix grid via VirtualMatrix (virtual scrolling, sticky headers, cursor nav)
-                captured_shape = shape
-                expanded do
-                    vm = widget(CrymbleUI::VirtualMatrix.new(
-                        adapter: shape.matrix_adapter.not_nil!,
-                        id: "matrix_grid_#{shape.id}",
-                    ))
-                    shape.matrix_adapter.try &.virtual_matrix = vm.as(CrymbleUI::VirtualMatrix)
-                    # Content sizing and the refusal travel together — offering a drag
-                    # whose result the next re-measure overwrites would be a lie.
-                    vm.as(CrymbleUI::VirtualMatrix).auto_size = shape.auto_size_cells
-                    # NOT `interactive_resize = !auto_size_cells` any more: the refusal is the
-                    # matrix's own, and it is per LINE. A sticky line — embrace's
-                    # record-label column — is never content-sized, so a drag there sticks and is
-                    # offered; a column the mode measures still refuses, because that drag really
-                    # would be overwritten. `interactive_resize` stays what it always was: a hard
-                    # veto for a consumer that wants no resizing at all.
-                    # Restore cut highlight from @cut_cell (survives rebuild)
-                    if (cc = @cut_cell) && cc[0] == shape.id
-                        vm.as(CrymbleUI::VirtualMatrix).drag_source_cell = {cc[1], cc[2]}
-                        vm.as(CrymbleUI::VirtualMatrix).drag_source_was_preexisting = true
-                    end
-                    vm.on_right_click_handler = ->(pos : CrymbleUI::Vec2) {
-                        show_cell_context_menu(captured_shape, pos)
-                        nil
-                    }
-                    vm.as(CrymbleUI::VirtualMatrix).on_cell_drop_handler = -> {
-                        captured_shape.update(true)
-                        request_rebuild
-                        nil
-                    }
-                    # Double-click on a Drilldown cell (aggregate over >1 basic rows)
-                    # spawns a new Shape with filters pre-populated from the cell's
-                    # cluster keys. Returns true to suppress the default proxy
-                    # forwarding (which would try to open edit/combo mode).
-                    vm.as(CrymbleUI::VirtualMatrix).on_cell_activate = ->(rc : Tuple(Int32, Int32)) {
-                        shape_drill_from_cell(captured_shape, rc) != nil
-                    }
-                end
-                end # vstack
-            else
-                text("(select a table first)")
-            end
+            build_matrix_body(shape)
         end
         tn.children.first?.try &.hover_text = "(Editable) perspective of prior selections ('P' and 'E' in Shape)"
+    end
+
+    # The grid and its toolbar, without any heading of their own — shared by the framed
+    # (one-page) and bare (own-tab) forms so the two cannot drift apart.
+    private def build_matrix_body(shape : ShapeState) : Nil
+        if shape.matrix_adapter
+            vstack(spacing: 5.0) do
+                hstack(spacing: 5.0) do
+                    button("Add field", padding: 3.0, id: "mx_addf_#{shape.id}") { shape.add_field_simple; request_rebuild }
+                    button("...", padding: 3.0, id: "mx_addf_dlg_#{shape.id}") do
+                        dialog = Dialogs::AddField.new("Add new field", shape.persistency, shape.context) do |name, ref_field_lid|
+                            shape.add_field_custom(name, ref_field_lid)
+                            request_rebuild
+                        end
+                        add_dialog(dialog)
+                    end
+                    button("Add record", padding: 3.0, id: "mx_addr_#{shape.id}") { shape.add_record; request_rebuild }
+                end
+
+                # Matrix grid via VirtualMatrix (virtual scrolling, sticky headers, cursor nav)
+            captured_shape = shape
+            expanded do
+                vm = widget(CrymbleUI::VirtualMatrix.new(
+                    adapter: shape.matrix_adapter.not_nil!,
+                    id: "matrix_grid_#{shape.id}",
+                ))
+                shape.matrix_adapter.try &.virtual_matrix = vm.as(CrymbleUI::VirtualMatrix)
+                # Content sizing and the refusal travel together — offering a drag
+                # whose result the next re-measure overwrites would be a lie.
+                vm.as(CrymbleUI::VirtualMatrix).auto_size = shape.auto_size_cells
+                # NOT `interactive_resize = !auto_size_cells` any more: the refusal is the
+                # matrix's own, and it is per LINE. A sticky line — embrace's
+                # record-label column — is never content-sized, so a drag there sticks and is
+                # offered; a column the mode measures still refuses, because that drag really
+                # would be overwritten. `interactive_resize` stays what it always was: a hard
+                # veto for a consumer that wants no resizing at all.
+                # Restore cut highlight from @cut_cell (survives rebuild)
+                if (cc = @cut_cell) && cc[0] == shape.id
+                    vm.as(CrymbleUI::VirtualMatrix).drag_source_cell = {cc[1], cc[2]}
+                    vm.as(CrymbleUI::VirtualMatrix).drag_source_was_preexisting = true
+                end
+                vm.on_right_click_handler = ->(pos : CrymbleUI::Vec2) {
+                    show_cell_context_menu(captured_shape, pos)
+                    nil
+                }
+                vm.as(CrymbleUI::VirtualMatrix).on_cell_drop_handler = -> {
+                    captured_shape.update(true)
+                    request_rebuild
+                    nil
+                }
+                # Double-click on a Drilldown cell (aggregate over >1 basic rows)
+                # spawns a new Shape with filters pre-populated from the cell's
+                # cluster keys. Returns true to suppress the default proxy
+                # forwarding (which would try to open edit/combo mode).
+                vm.as(CrymbleUI::VirtualMatrix).on_cell_activate = ->(rc : Tuple(Int32, Int32)) {
+                    shape_drill_from_cell(captured_shape, rc) != nil
+                }
+            end
+            end # vstack
+        else
+            text("(select a table first)")
+        end
     end
 
     # Format a (added, removed) count pair as "+a/-r", "+a", "-r", or "" when

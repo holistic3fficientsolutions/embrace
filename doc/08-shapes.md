@@ -134,6 +134,33 @@ Available from the GUI (`src/gui/embrace.cr`):
 | **Maximize** | Toggles full-window mode for one Shape |
 | **Auto-size perspective cells** | View menu, per Shape. Sizes columns and rows to their content; while it is on they cannot be dragged. Off by default, and not saved with the document. |
 | **Transpose** | Swaps row and column headers (diagonal mirror on fieldlist) |
+| **Shape config on one page** | Main window's View menu, global (all Shapes). On by default; see below. Not saved with the document. |
+
+## Shape config on one page
+
+A Shape panel can lay its parts out two ways, and the main window's **View → Shape config on
+one page** switches between them for every Shape at once.
+
+**On (the default)** is the layout embrace has always had: the table picker, the configurator,
+the field list and the filter sit stacked directly above the perspective. Everything is in one
+view, so changing a field and seeing the grid answer happens in the same glance — which is what
+makes the panel teach itself, and what makes a screenshot or a video of it worth anything.
+
+**Off** moves them — history included — onto a **Config** tab, and gives the perspective its
+own, so the grid gets the whole panel. Useful once you know the tool and want room to work
+rather than a running explanation of it. History can go along because the panel's title already
+carries the branch and commit summary, so you can see where you are without the navigation being
+on screen.
+
+The Config tab opens every section: it has the whole panel to itself, so a section that needs a
+click before it says anything is just a click. They stay collapsible, and one you fold away
+stays folded. The perspective tab drops its "Perspective" heading for the same reason — the tab
+is already labelled, and repeating the word would cost a line of the grid's height to say
+nothing.
+
+**Keyboard shortcuts keep working from either tab.** The config tab's controls are still there
+while the perspective is forward, so a shortcut never depends on which page you happen to be
+looking at.
 
 ## Data vs. Perspective Changes
 

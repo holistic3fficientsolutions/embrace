@@ -42,8 +42,9 @@ private def changes_row_widget(app : EmbraceApp, shape : ShapeState, renderer, i
         app.request_rebuild
         renderer.settle_rendering(app)
     end
-    vm = app.find("changes_#{shape.id}").as(CrymbleUI::VirtualMatrix)
-    vm.active_cells.each_value.find { |w| w.id == id }
+    # A plain find now: the table is a layer-free RecursiveGrid, so its cells are ordinary
+    # widgets in the tree rather than a VirtualMatrix's virtualised active_cells.
+    app.find(id)
 end
 
 private def read_cell(app : EmbraceApp, shape : ShapeState, field : FieldLID, record : RecordLID)
