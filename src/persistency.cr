@@ -179,6 +179,25 @@ module Interface::Persistency::Backend(T)
     def context=(context) : Context
         @context_stack.top = context
     end
+
+    # READ on another context's behalf, and leave the stack as you found it - RAISE OR NOT.
+    #
+    # The pop belongs in an `ensure`, because the alternative is silent and permanent: a raise
+    # inside the block leaves the stack one frame deeper for the rest of the session, and every
+    # later read on the base context then answers from the wrong path. Found on main in the
+    # pending-changes summary (gui/embrace.cr), which popped on the normal path only.
+    #
+    # DISCARDS the popped context, so this is for reads. A site that KEEPS it
+    # (`shape.context = persistency.contexts.pop` - several do, deliberately) is not this shape
+    # and must not be converted to it.
+    def with_context(context : Context, &)
+        @context_stack.push(context)
+        begin
+            yield
+        ensure
+            @context_stack.pop
+        end
+    end
     def version : Int32
         @version
     end

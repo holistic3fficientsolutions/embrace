@@ -196,7 +196,9 @@ class SimpleMatrixAdapter(T, U, V)
     include CrymbleUI::Widgets::VirtualMatrix::MatrixAdapter
 
     @shape : ShapeState?
-    property on_data_changed : Proc(Nil)?
+    # Fired after every write, with whether it was STRUCTURAL (announce_write's answer): the app
+    # rebuilds either way, and lets input queued behind a per-cell write carry on meanwhile.
+    property on_data_changed : Proc(Bool, Nil)?
     property virtual_matrix : CrymbleUI::VirtualMatrix? = nil
 
     # Change animation state
@@ -488,7 +490,7 @@ class SimpleMatrixAdapter(T, U, V)
     #              structure did not move.
     #   structural everything else — including a created record, which no fingerprint can see.
     #
-    # Seethe design notes for the measurements behind each veto.
+    # See the design notes for the measurements behind each veto.
     # The two vetoes knowable BEFORE the write: a header cell can re-group rows, and a Shape
     # that pulls fields across a reference paints one record into several rows. Both settle the
     # answer as "structural" on their own, so when either fires the caller skips the O(rows)
@@ -510,9 +512,10 @@ class SimpleMatrixAdapter(T, U, V)
         rows == before[0] && cols == before[1]
     end
 
+    # Returns whether the write was structural - false for silent and per-cell.
     private def announce_write(shape : ShapeState, requested : {Int32, Int32},
-                               result : {Int32, Int32}, before : {Array(Int32), Array(Int32)}?) : Nil
-        return unless @last_assign_mutated # silent: nothing was written
+                               result : {Int32, Int32}, before : {Array(Int32), Array(Int32)}?) : Bool
+        return false unless @last_assign_mutated # silent: nothing was written
         # `before` is nil when the classification was already settled before the write, so the
         # O(rows) capture was skipped — see may_announce_per_cell?.
         per_cell = !before.nil? &&
@@ -528,11 +531,36 @@ class SimpleMatrixAdapter(T, U, V)
         live = shape.matrix_adapter
         if live && !live.same?(self)
             live.invalidate_all!
+            true
         elsif per_cell
             invalidate_cell!(requested[0], requested[1])
+            refit_cell(requested[0], requested[1])
+            false
         else
             invalidate_all!
+            true
         end
+    end
+
+    # A COMMITTED write re-fits its own cell, so content sizing follows EVERY editor.
+    #
+    # The per-keystroke hook (cell_paint's `fit_on_edit`) is attached to the TextInput, because
+    # typing has to resize live. A reference cell paints a ComboBox and a bool paints a Checkbox;
+    # their writes never went through that hook, so with the mode on, pointing a reference at a
+    # longer value left the column at its old width and cut the value - until the mode was toggled
+    # off and on, which re-measures everything (field report 2026-09-22).
+    #
+    # Asks the ADAPTER for the size rather than measuring text here: `cell_natural_size` is the
+    # same measurement `flush_auto_size` uses, and it already discriminates a dropdown from a text
+    # cell (a reference votes width but not lines). One owner, so the incremental path and the
+    # sweep cannot disagree about what a cell needs.
+    #
+    # Only on the per-cell branch: the structural branch re-measures the whole grid anyway. And
+    # `fit_cell_to_content` is a no-op while the mode is off, which keeps the flag in ONE place.
+    private def refit_cell(row : Int32, col : Int32) : Nil
+        return unless vm = @virtual_matrix
+        natural = cell_natural_size(row, col)
+        vm.fit_cell_to_content(row, col, natural[:width], natural[:height], natural[:lines])
     end
 
     def cell_assign(row : Int32, col : Int32, value : String) : Tuple(Int32, Int32)
@@ -552,8 +580,8 @@ class SimpleMatrixAdapter(T, U, V)
             end
             shape.context = @persistency.contexts.pop
             CrymbleUI::InputLog.record_write(row, col, value) if CrymbleUI::InputLog.enabled?
-            announce_write(shape, {row, col}, result, before)
-            @on_data_changed.try &.call
+            structural = announce_write(shape, {row, col}, result, before)
+            @on_data_changed.try &.call(structural)
             result
         else
             begin
@@ -583,9 +611,9 @@ class SimpleMatrixAdapter(T, U, V)
                 result = {row, col}
             end
             shape.context = @persistency.contexts.pop
-            announce_write(shape, {row, col}, result, before)
+            structural = announce_write(shape, {row, col}, result, before)
             @virtual_matrix.try &.set_cursor(result[0], result[1])
-            @on_data_changed.try &.call
+            @on_data_changed.try &.call(structural)
             result
         else
             {row, col}
@@ -1423,10 +1451,16 @@ class ShapeState
 
     # The pinned table's display name, or nil if the shape isn't table-pinned. Blank -> "(unnamed)",
     # via the one read-time owner (Persistency#display_name).
+
+    # UNDER THE SHAPE'S OWN CONTEXT. A name resolves along the current path, and the panel build
+    # calls `display_title` bare (embrace.cr), so reading it ambiently titled a shape stepped back
+    # through history with the NEWEST commit's name: measured 2026-09-22, a shape at 3/4 said
+    # "People" where that commit's name is "Persons". A panel that names the commit it is viewing
+    # must name the table as that commit has it.
     def table_name : String?
         lid = @table_lid
         return nil unless lid
-        @persistency.display_name(lid)
+        @persistency.with_context(@context) { @persistency.display_name(lid) }
     end
 
     # The current branch's name (the tip the shape is viewing), or nil before update seeds the leaves.

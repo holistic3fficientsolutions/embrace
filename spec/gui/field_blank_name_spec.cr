@@ -77,11 +77,19 @@ describe "blank names: truthful storage, (unnamed) display" do
         names.should contain(Constant::Unnamed)
     end
 
-    it "a table renamed to empty titles the shape (unnamed)" do
+    # Re-homed 2026-09-22 onto the owner it was always testing. It used to read
+    # `ShapeState#table_name`, which was deleted the same day: nothing in production called it
+    # (this example was its only caller in the repo), so "titles the shape" had not been true of
+    # it for some time. The CONTRACT is display_name's and survives - truthful storage, and a
+    # blank name presented as "(unnamed)" - read here through the shape's own context, because
+    # display_name resolves along the current path.
+    it "a table renamed to empty reads back as (unnamed)" do
         shape, persistency, table_lid = make_shape
         persistency.contexts.push(shape.context)
         persistency.set_value(MetaFieldLIDs::Names, table_lid, "")
         shape.context = persistency.contexts.pop
-        shape.table_name.should eq(Constant::Unnamed)
+        persistency.with_context(shape.context) do
+            persistency.display_name(table_lid).should eq(Constant::Unnamed)
+        end
     end
 end

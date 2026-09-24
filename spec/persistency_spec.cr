@@ -1175,3 +1175,34 @@ describe "Persistency::Generic::LoadSave (.embrace file format)" do
     json.should start_with("{")
   end
 end
+
+# A READ on another context's behalf must leave the stack as it found it, RAISE OR NOT.
+#
+# Found on main 2026-09-22 by diffing against the crow branch: the pending-changes summary
+# (gui/embrace.cr) pushed the shape's context, read `changes_in_open_commit`, and popped on the
+# normal path only - so a raise inside the read left the ContextStack one frame deeper for the
+# rest of the session, and every later read on the base context would answer from the wrong path.
+# The branch had already wrapped the same call in `ensure`.
+#
+# The helper is what the 46 inline push/pop sites on main should converge on, one at a time and
+# only where the popped context is DISCARDED: several sites deliberately keep it
+# (`shape.context = persistency.contexts.pop`) and must not be converted.
+describe "Persistency#with_context" do
+    it "restores the stack depth, and returns the block's value" do
+        p = Persistency::Default.new
+        before = p.contexts.size
+        result = p.with_context(p.context.clone) { 42 }
+        result.should eq(42)
+        p.contexts.size.should eq(before)
+    end
+
+    it "restores the stack depth when the block RAISES" do
+        p = Persistency::Default.new
+        before = p.contexts.size
+        expect_raises(Exception, "boom") do
+            p.with_context(p.context.clone) { raise "boom" }
+        end
+        p.contexts.size.should eq(before),
+            "a raise inside the block left the stack #{p.contexts.size - before} frame(s) deeper"
+    end
+end

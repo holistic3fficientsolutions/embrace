@@ -458,6 +458,130 @@ describe "auto-size perspective cells" do
         live.active_cells[rc].bounds.width.should be > before            # and the cell grew
         adapter.cell_read(rc).to_s.should eq("b")                        # still uncommitted
     end
+    # THE SECOND EDIT SESSION - the one that comes after a commit.
+    #
+    # Wolfgang, 2026-09-21: "click 1/c2, 'enter', 'a', 'a' -> widens; BS -> shortens; 'Enter' to
+    # leave; same again: 'enter', 'a' -> widens; BS -> now does _not_ shorten!" Also on row
+    # heights, and on the Escape that reverts the edit.
+    #
+    # One session cannot show it. Committing rebuilds the tree, reconciliation hands the fresh
+    # matrix the old one's sizes and cancels the re-measure - and used to drop the pass-1 extents
+    # with it, leaving the per-keystroke path grow-only from the first commit onward
+    # (crymbleui VirtualMatrix#carry_line_extents_from). Every assertion here is on the far side
+    # of that commit; the first session is the control that the gesture works at all.
+    it "shortens on backspace in the second edit session, after a commit" do
+        app = make_sized_app
+        renderer = CrymbleUI::Testing::TestRenderer.new(1200, 800)
+        renderer.settle_rendering(app)
+        shape = app.shapes.first
+        adapter = shape.matrix_adapter.not_nil!
+        app.find(toggle_id(shape)).not_nil!.as(CrymbleUI::MenuItem).trigger_click
+        renderer.settle_rendering(app)
+
+        rc = data_cell(adapter, "b").not_nil!
+
+        # Session one: 60 characters clear the 42-character sibling in this column, so the edited
+        # cell alone decides the width and one backspace has to be visible.
+        vm = adapter.virtual_matrix.not_nil!
+        vm.set_cursor_from_cell(rc)
+        60.times { vm.on_text_input('W') }
+        renderer.render_frame(app)
+        grown = vm.active_cells[rc].bounds.width
+        vm.on_key_down(SF::Keyboard::Key::Backspace, false, false)
+        renderer.render_frame(app)
+        vm.active_cells[rc].bounds.width.should be < grown # control: it shortens before a commit
+        vm.on_key_down(SF::Keyboard::Key::Enter, false, false)
+        renderer.settle_rendering(app)
+
+        # Session two: the same cell, the same gesture, across the rebuild the commit caused.
+        vm = adapter.virtual_matrix.not_nil!
+        vm.set_cursor_from_cell(rc)
+        80.times { vm.on_text_input('W') }
+        renderer.render_frame(app)
+        grown2 = vm.active_cells[rc].bounds.width
+        grown2.should be > grown # control: the second session still widens
+        20.times { vm.on_key_down(SF::Keyboard::Key::Backspace, false, false) }
+        renderer.render_frame(app)
+
+        vm.active_cells[rc].bounds.width.should be < grown2,
+            "after the commit the cell stayed #{vm.active_cells[rc].bounds.width.round(1)}px wide " \
+            "through twenty backspaces"
+    end
+
+    it "puts the width back on Escape in the second edit session, after a commit" do
+        # Escape reverts the edit, so the size has to revert with it - on the far side of a commit
+        # as well as before one. core announces the cancel through the same fit hook as a change
+        # (shape.cr fit_on_edit, ev.change? || ev.cancel?), so what the revert asks for is a
+        # SHRINK, and the grow-only fallback swallowed it.
+        app = make_sized_app
+        renderer = CrymbleUI::Testing::TestRenderer.new(1200, 800)
+        renderer.settle_rendering(app)
+        shape = app.shapes.first
+        adapter = shape.matrix_adapter.not_nil!
+        app.find(toggle_id(shape)).not_nil!.as(CrymbleUI::MenuItem).trigger_click
+        renderer.settle_rendering(app)
+
+        rc = data_cell(adapter, "b").not_nil!
+
+        # Commit one edit first: the defect needs a rebuild to exist at all.
+        vm = adapter.virtual_matrix.not_nil!
+        vm.set_cursor_from_cell(rc)
+        30.times { vm.on_text_input('W') }
+        vm.on_key_down(SF::Keyboard::Key::Enter, false, false)
+        renderer.settle_rendering(app)
+
+        vm = adapter.virtual_matrix.not_nil!
+        vm.set_cursor_from_cell(rc)
+        settled = vm.active_cells[rc].bounds.width
+        80.times { vm.on_text_input('W') }
+        renderer.render_frame(app)
+        vm.active_cells[rc].bounds.width.should be > settled # control: the edit widened it
+
+        vm.on_key_down(SF::Keyboard::Key::Escape, false, false)
+        renderer.settle_rendering(app)
+
+        adapter.cell_read(rc).to_s.size.should eq(30) # control: the value really did revert
+        vm.active_cells[rc].bounds.width.should be_close(settled, 1.0),
+            "the cell kept the abandoned edit's width (#{vm.active_cells[rc].bounds.width.round(1)}px " \
+            "against #{settled.round(1)}px) after Escape put the old value back"
+    end
+
+    it "shortens the row on backspace in the second edit session, after a commit" do
+        # The height half of the same report, through the same hook: Alt+Enter authors the breaks
+        # that make the row tall, backspace takes them away again.
+        app = make_sized_app
+        renderer = CrymbleUI::Testing::TestRenderer.new(1200, 800)
+        renderer.settle_rendering(app)
+        shape = app.shapes.first
+        adapter = shape.matrix_adapter.not_nil!
+        app.find(toggle_id(shape)).not_nil!.as(CrymbleUI::MenuItem).trigger_click
+        renderer.settle_rendering(app)
+
+        rc = data_cell(adapter, "b").not_nil!
+
+        vm = adapter.virtual_matrix.not_nil!
+        vm.set_cursor_from_cell(rc)
+        vm.on_text_input('x')
+        vm.on_key_down(SF::Keyboard::Key::Enter, false, false)
+        renderer.settle_rendering(app)
+
+        vm = adapter.virtual_matrix.not_nil!
+        vm.set_cursor_from_cell(rc)
+        single = vm.active_cells[rc].bounds.height
+        vm.on_text_input('x')
+        4.times { vm.on_key_down(SF::Keyboard::Key::Enter, false, false, true) } # Alt+Enter
+        vm.on_text_input('y')
+        renderer.render_frame(app)
+        tall = vm.active_cells[rc].bounds.height
+        tall.should be > single # control: the authored breaks made the row taller
+
+        6.times { vm.on_key_down(SF::Keyboard::Key::Backspace, false, false) }
+        renderer.render_frame(app)
+
+        vm.active_cells[rc].bounds.height.should be_close(single, 1.0),
+            "the row stayed #{vm.active_cells[rc].bounds.height.round(1)}px tall after the breaks " \
+            "were deleted again (a single-line row is #{single.round(1)}px)"
+    end
 
     it "grows the row for the breaks you type, and keeps the value in view" do
         # Field report, two rounds. The breaks a user types ARE content: the row grows for them
@@ -614,4 +738,126 @@ describe "auto-size perspective cells" do
         cell = vm.active_cells.find { |k, _| k[1] == first_data }.not_nil![1]
         cell.bounds.x.should be >= vm.ruler_col_width_pixels
     end
+
+    # DELETING A RECORD MUST NOT MOVE THE SURVIVING ROW'S TEXT.
+    #
+    # Wolfgang, 2026-09-21: with one record left and its row made tall by a multi-line cell, the
+    # short cells beside it drew their values on the row's BOTTOM edge - "see how 1/c1's '1'
+    # jumps?" - while the record-number column next to them stayed centred. Adding a record back
+    # cured it. The cause is in crymbleui: a one-row grid's scroll order is `[0]`, which
+    # `derive_sticky_count` could not tell apart from "row 0 is pinned", and a whole-axis sticky
+    # strip leaves the ink-placement band empty, so `place_ink` pushed each value to its cell's
+    # bottom edge to keep it "visible".
+    it "keeps a short cell's value put when the record below it is deleted" do
+        app = EmbraceApp.new
+        p = app.persistency
+        hash = Hash(String, FieldLID | TableLID | RecordLID).new
+        TableReader(Persistency::Default, Persistency::Cell).new(p, hash) << <<-EOT
+            Sheet
+            c1 | c2
+            1 | a
+            2 | b
+        EOT
+        app.shapes.clear
+        app.shapes << ShapeState.new("S", p, p.context.clone, hash["Sheet"].as(TableLID))
+        app.request_rebuild
+        renderer = CrymbleUI::Testing::TestRenderer.new(1200, 800)
+        renderer.settle_rendering(app)
+        shape = app.shapes.first
+        adapter = shape.matrix_adapter.not_nil!
+        app.find(toggle_id(shape)).not_nil!.as(CrymbleUI::MenuItem).trigger_click
+        renderer.settle_rendering(app)
+
+        text_offset = ->(rc : Tuple(Int32, Int32)) {
+            cell = adapter.virtual_matrix.not_nil!.active_cells[rc]
+            prim = cell.to_primitives(cell.bounds).select(&.is_a?(CrymbleUI::DrawText)).first
+            prim.as(CrymbleUI::DrawText).position.y
+        }
+
+        # Row 0 becomes tall: four authored lines in c2, committed.
+        vm = adapter.virtual_matrix.not_nil!
+        vm.set_cursor_from_cell({0, 2})
+        vm.on_text_input('a')
+        3.times do
+            vm.on_key_down(SF::Keyboard::Key::Enter, false, false, true) # Alt+Enter
+            "aaa".each_char { |ch| vm.on_text_input(ch) }
+        end
+        vm.on_key_down(SF::Keyboard::Key::Enter, false, false)
+        renderer.settle_rendering(app)
+
+        tall = adapter.virtual_matrix.not_nil!.active_cells[{0, 1}].bounds.height
+        tall.should be > 40.0 # control: the row really did grow for the four lines
+        before = text_offset.call({0, 1})
+
+        # Delete record 2, the way the cell context menu does it.
+        adapter.cell_delete({1, 1})
+        shape.update(true)
+        app.request_rebuild
+        renderer.settle_rendering(app)
+
+        adapter.get_scrollorder[0].size.should eq(1) # control: one record left
+        adapter.virtual_matrix.not_nil!.active_cells[{0, 1}].bounds.height.should be_close(tall, 0.5)
+        text_offset.call({0, 1}).should be_close(before, 0.5),
+            "the surviving row drew c1's value #{text_offset.call({0, 1}).round(1)}px down a " \
+            "#{tall.round(1)}px cell, against #{before.round(1)}px while the second record existed"
+    end
+
+
+    # A REFERENCE CELL IS EDITED TOO, and the mode has to follow it.
+    #
+    # Wolfgang, 2026-09-22: with auto-size on, pointing a reference cell at a longer value left
+    # the column at its old width and cut the value ("»Suppressi|"); toggling the mode off and on
+    # re-measured it. The per-keystroke fit hook is attached to the TEXT editor only (shape.cr's
+    # cell_paint), and a reference cell paints a ComboBox whose commit goes through
+    # `cell_assign_reference` - so no path re-fitted the line after the write. The full sweep
+    # measures it correctly, which is exactly why the toggle looked like a cure.
+    it "widens the column when a reference cell is pointed at a longer value" do
+        app = EmbraceApp.new
+        p = app.persistency
+        hash = Hash(String, FieldLID | TableLID | RecordLID).new
+        TableReader(Persistency::Default, Persistency::Cell).new(p, hash) << <<-EOT
+            Cities
+            City
+            Rome
+            Constantinopolis
+
+            Persons
+            Person | City_City
+            Alan | Rome
+        EOT
+        app.shapes.clear
+        app.shapes << ShapeState.new("P", p, p.context.clone, hash["Persons"].as(TableLID))
+        app.request_rebuild
+        renderer = CrymbleUI::Testing::TestRenderer.new(1200, 800)
+        renderer.settle_rendering(app)
+        shape = app.shapes.first
+        adapter = shape.matrix_adapter.not_nil!
+        app.find(toggle_id(shape)).not_nil!.as(CrymbleUI::MenuItem).trigger_click
+        renderer.settle_rendering(app)
+
+        rows, cols = adapter.get_scrollorder
+        rc = nil
+        rows.each { |r| cols.each { |c| rc ||= ({r, c} if adapter.cell_read({r, c}).is_a?(ReferenceCell)) } }
+        rc = rc.not_nil!
+        before = adapter.virtual_matrix.not_nil!.active_cells[rc].bounds.width
+
+        # The ReferenceCell is LIVE: read the rank into an Int now, or the "before" value
+        # reads back as the value we are about to assign.
+        original_rank = adapter.cell_read(rc).as(ReferenceCell).rank
+        candidates = {} of Int32 => String
+        adapter.cell_read(rc).as(ReferenceCell).each_defined_fulfilling { |cand| candidates[cand.rank] = cand.value.to_s }
+        longer = candidates.find { |_, v| v == "Constantinopolis" }.not_nil![0]
+        longer.should_not eq(original_rank) # control: it really is a different record
+
+        # The production path: this is what the cell's ComboBox calls on select.
+        adapter.cell_assign_reference(rc[0], rc[1], longer)
+        renderer.settle_rendering(app)
+
+        adapter.cell_read(rc).as(ReferenceCell).rank.should eq(longer) # control: the value changed
+        width = adapter.virtual_matrix.not_nil!.active_cells[rc].bounds.width
+        width.should be > before,
+            "the column stayed #{width.round(1)}px after the reference was pointed at a value " \
+            "#{"Constantinopolis".size - "Rome".size} characters longer"
+    end
+
 end

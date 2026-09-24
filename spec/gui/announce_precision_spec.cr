@@ -17,7 +17,7 @@ include Persistency
 # The spy is PER-INSTANCE, not a class variable: a shared counter cannot attribute an
 # announcement to a Shape, and the two-Shape example needs exactly that. `super` is correct
 # here because both methods arrive via the included MatrixAdapter module, so the class defines
-# them for the first time — `previous_def` has nothing to chain to the design notes.
+# them for the first time — `previous_def` has nothing to chain to.
 class SimpleMatrixAdapter(T, U, V)
     property probe_all : Int32 = 0
     property probe_cell : Int32 = 0
@@ -39,7 +39,7 @@ class SimpleMatrixAdapter(T, U, V)
 
     # NOTE the different keyword: cell_paint is defined in THIS class (shape.cr), so the reopen
     # must chain with previous_def. `super` would resolve into the module's `abstract def` —
-    # the failurethe design notes recorded.
+    # the failure the design notes recorded.
     property probe_paints : Int32 = 0
 
     def cell_paint(row : Int32, col : Int32) : CrymbleUI::Widget

@@ -424,7 +424,7 @@ class EmbraceApp < CrymbleUI::App
 
     private def build_shape_panel(shape : ShapeState) : Nil
         shape.update
-        shape.matrix_adapter.try { |a| a.on_data_changed = ->{ request_rebuild; nil } }
+        shape.matrix_adapter.try { |a| a.on_data_changed = ->(structural : Bool) { request_rebuild(blocks_input: structural); nil } }
         idx = @shapes.index(shape) || 0
         step = 20.0
         cascade_x = step + step * (idx % 10) + 2 * step * (idx // 10)
@@ -691,9 +691,9 @@ class EmbraceApp < CrymbleUI::App
             # tab scrolls as one page, and a second scrolling layer inside it would put the rows
             # in a coordinate space of their own (crymbleui docs/RENDERING_LAWS.md).
             if shape.is_last_commit?
-                @persistency.contexts.push(shape.context)
-                changes = @persistency.changes_in_open_commit
-                @persistency.contexts.pop  # read-only: just discard (don't overwrite base context)
+                # read-only, and the pop is in an `ensure` (Persistency#with_context): a raise
+                # inside the read used to leave the stack one frame deeper for the session.
+                changes = @persistency.with_context(shape.context) { @persistency.changes_in_open_commit }
                 non_empty = changes.select { |_, tc| !tc.empty? }
                 # Resolve table names once + sort alphabetically (case-insensitive).
                 named_changes = non_empty.map do |table_lid, tc|
