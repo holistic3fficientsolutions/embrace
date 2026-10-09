@@ -5,6 +5,7 @@ require "../../src/gui/cell"
 require "../../src/debug-helper"
 require "../../src/constants"
 require "crymble-ui/testing/test_renderer"
+require "./support/fixtures"
 
 include Persistency
 
@@ -22,34 +23,12 @@ include Persistency
 # the chord, the opt-in, or the routing that carries `alt` to the cell editor.
 
 private def make_notes_app : EmbraceApp
-  app = EmbraceApp.new
-  persistency = app.persistency
-  hash = Hash(String, FieldLID | TableLID | RecordLID).new
-  help = TableReader(Persistency::Default, Persistency::Cell).new(persistency, hash)
-  help << <<-EOT
+  Fixtures.app(<<-EOT)[0]
       Notes
       Name | Body
       Alpha | one
       Beta | two
   EOT
-  lid = hash["Notes"].as(TableLID)
-  app.shapes.clear
-  ctx = persistency.context.clone
-  app.shapes << ShapeState.new("Notes", persistency, ctx, lid)
-  app.request_rebuild
-  app
-end
-
-private def data_cell(adapter, rows, cols) : Tuple(Int32, Int32)
-  rows.each do |r|
-    cols.each do |c|
-      next if adapter.cell_get_header_info({r, c})
-      v = adapter.cell_read({r, c})
-      next if v == "" || v.is_a?(ReferenceCell)
-      return {r, c}
-    end
-  end
-  raise "no data cell found"
 end
 
 describe "multi-line cell values" do
@@ -70,8 +49,7 @@ describe "multi-line cell values" do
     renderer = CrymbleUI::Testing::TestRenderer.new(1200, 800)
     renderer.settle_rendering(app)
     adapter = app.shapes.first.matrix_adapter.not_nil!
-    rows, cols = adapter.get_scrollorder
-    r, c = data_cell(adapter, rows, cols)
+    r, c = Fixtures.first_data_cell(adapter)
     before = adapter.cell_read({r, c}).to_s
 
     vm = adapter.virtual_matrix.not_nil!
@@ -94,8 +72,7 @@ describe "multi-line cell values" do
     renderer = CrymbleUI::Testing::TestRenderer.new(1200, 800)
     renderer.settle_rendering(app)
     adapter = app.shapes.first.matrix_adapter.not_nil!
-    rows, cols = adapter.get_scrollorder
-    r, c = data_cell(adapter, rows, cols)
+    r, c = Fixtures.first_data_cell(adapter)
     adapter.cell_assign(r, c, "")
     app.request_rebuild
     renderer.settle_rendering(app)
@@ -124,8 +101,7 @@ describe "multi-line cell values" do
   it "survives save and load unchanged" do
     app = make_notes_app
     adapter = app.shapes.first.matrix_adapter.not_nil!
-    rows, cols = adapter.get_scrollorder
-    r, c = data_cell(adapter, rows, cols)
+    r, c = Fixtures.first_data_cell(adapter)
     adapter.cell_assign(r, c, "first\nsecond")
     adapter.cell_read({r, c}).should eq("first\nsecond")
 

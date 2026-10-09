@@ -3,30 +3,12 @@ require "../../spec/spec_helper"
 require "../../src/gui/shape"
 require "../../src/debug-helper"
 require "../../src/constants"
+require "./support/fixtures"
 
 include Persistency
 
-# Helper: persistency with one table containing region+product+amount over multiple rows.
-# Schema: Sales[Region, Product, Amount] — duplicate values across rows so filtering
-# has something to do. Returns {persistency, table_lid}.
-private def make_sales_setup : {Persistency::Default, TableLID}
-    persistency = Persistency::Default.new
-    hash = Hash(String, FieldLID | TableLID | RecordLID).new
-    help = TableReader(Persistency::Default, Persistency::Cell).new(persistency, hash)
-    help << <<-EOT
-        Sales
-        Region | Product | Amount
-        north | widget | 10
-        south | widget | 20
-        north | gadget | 30
-        south | gadget | 40
-        north | widget | 50
-    EOT
-    {persistency, hash["Sales"].as(TableLID)}
-end
-
 private def make_filter_shape : ShapeState
-    persistency, table_lid = make_sales_setup
+    persistency, table_lid = Fixtures.sales
     context = persistency.context.clone
     ShapeState.new("Sales", persistency, context, table_lid)
 end

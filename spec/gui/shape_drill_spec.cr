@@ -3,63 +3,22 @@ require "../../spec/spec_helper"
 require "../../src/gui/shape"
 require "../../src/debug-helper"
 require "../../src/constants"
+require "./support/fixtures"
 
 include Persistency
 
-# Sales table with duplicate Region×Product combos so a pivot on Region/Product
-# aggregates more than one basic row per cell (makes Drilldown cells exist).
-private def make_sales_setup : {Persistency::Default, TableLID}
-    persistency = Persistency::Default.new
-    hash = Hash(String, FieldLID | TableLID | RecordLID).new
-    help = TableReader(Persistency::Default, Persistency::Cell).new(persistency, hash)
-    help << <<-EOT
-        Sales
-        Region | Product | Amount
-        north | widget | 10
-        south | widget | 20
-        north | gadget | 30
-        south | gadget | 40
-        north | widget | 50
-    EOT
-    {persistency, hash["Sales"].as(TableLID)}
-end
-
 private def make_configured_shape : ShapeState
-    persistency, table_lid = make_sales_setup
+    persistency, table_lid = Fixtures.sales
     context = persistency.context.clone
     shape = ShapeState.new("Sales", persistency, context, table_lid)
     # Configure pivot: Region=Row header, Product=Column header, Amount=Aggregate
-    configure_row_col_agg(shape, row_name: "Region", col_name: "Product", agg_name: "Amount")
+    Fixtures.pivot(shape, ["Region"], columns: ["Product"], aggregates: ["Amount"])
     shape
-end
-
-# Set each fieldlist row's Class by looking up the fieldlist row whose
-# InternalColumnIndex (derived from Column field + VT column order) matches
-# the VT column index for the named column.
-private def configure_row_col_agg(shape : ShapeState, row_name : String, col_name : String, agg_name : String)
-    classes = {
-        row_name => Table::Lazy::Pivot::Classes::Row.value.to_i64,
-        col_name => Table::Lazy::Pivot::Classes::Column.value.to_i64,
-        agg_name => Table::Lazy::Pivot::Classes::Aggregate.value.to_i64,
-    }
-    fl = shape.fieldlist.not_nil!
-    _ = fl.size  # trigger sync: fieldlist rows auto-populated from VT columns
-    unused_value = Table::Lazy::Pivot::Classes::Unused.value.to_i64
-    (0...fl.size[0]).each do |ri|
-        fl[[ri, Table::Lazy::Fieldlist::ColumnIndices::Class.value]] = unused_value
-    end
-    classes.each do |name, class_value|
-        fl_row = (0...fl.size[0]).find do |ri|
-            fl[[ri, Table::Lazy::Fieldlist::ColumnIndices::Name.value]] == name
-        end.not_nil!
-        fl[[fl_row, Table::Lazy::Fieldlist::ColumnIndices::Class.value]] = class_value
-    end
-    shape.matrix_adapter.not_nil!.invalidate_all!
 end
 
 describe "ShapeState.new(table_lid:)" do
     it "pre-selects the given table_lid (picker points at it, not the default)" do
-        persistency, table_lid = make_sales_setup
+        persistency, table_lid = Fixtures.sales
         # add a second table so "default" != our table_lid
         other_table = persistency.add_table("Other")
         persistency.add_field(other_table, "f", nil)
@@ -215,7 +174,7 @@ describe "ShapeState drill_from_cell" do
         # No row/col header set, just aggregates → single cell aggregating the whole
         # table. It's Drilldown (size > 1) but has empty cluster set. Drill should
         # still succeed: new shape normalized, no filters added.
-        persistency, table_lid = make_sales_setup
+        persistency, table_lid = Fixtures.sales
         context = persistency.context.clone
         shape = ShapeState.new("Sales", persistency, context, table_lid)
         # Set everything to Aggregate (no row/col headers)

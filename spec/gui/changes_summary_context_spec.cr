@@ -4,6 +4,7 @@ require "../../src/gui/embrace"
 require "../../src/debug-helper"
 require "../../src/constants"
 require "crymble-ui/testing/test_renderer"
+require "./support/fixtures"
 
 include Persistency
 
@@ -17,24 +18,15 @@ include Persistency
 # about the tristate header, which is what the sibling file's two-table fixture
 # exists for.
 private def make_sales_app : {EmbraceApp, Hash(String, FieldLID | TableLID | RecordLID)}
-    app = EmbraceApp.new
-    hash = Hash(String, FieldLID | TableLID | RecordLID).new
-    help = TableReader(Persistency::Default, Persistency::Cell).new(app.persistency, hash)
-    help << <<-EOT
+    Fixtures.app(<<-EOT)
         Sales
         Region | Product | Amount
         north | widget | 10
     EOT
-    app.shapes.clear
-    app.shapes << ShapeState.new("Sales", app.persistency, app.persistency.context.clone, hash["Sales"].as(TableLID))
-    app.request_rebuild
-    {app, hash}
 end
 
-# The summary's row widgets are held by SimpleMatrixAdapter, not by the widget
-# tree, so `app.find` cannot reach them — read them off `active_cells` instead.
-# That needs the History node expanded (it is collapsed by default), otherwise the
-# matrix is never laid out and `active_cells` is empty.
+# The summary's row widgets exist only while the History node is expanded (it is
+# collapsed by default): expand it, then find the row widget by id.
 private def changes_row_widget(app : EmbraceApp, shape : ShapeState, renderer, id : String) : CrymbleUI::Widget?
     tn = app.find("history_#{shape.id}").as(CrymbleUI::TreeNode)
     unless tn.expanded
@@ -42,8 +34,7 @@ private def changes_row_widget(app : EmbraceApp, shape : ShapeState, renderer, i
         app.request_rebuild
         renderer.settle_rendering(app)
     end
-    # A plain find now: the table is a layer-free RecursiveGrid, so its cells are ordinary
-    # widgets in the tree rather than a VirtualMatrix's virtualised active_cells.
+    # The table is a RecursiveGrid: its cells are ordinary widgets in the tree.
     app.find(id)
 end
 

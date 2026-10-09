@@ -4,6 +4,7 @@ require "../../src/gui/embrace"
 require "../../src/debug-helper"
 require "../../src/constants"
 require "crymble-ui/testing/test_renderer"
+require "./support/fixtures"
 
 include Persistency
 
@@ -16,11 +17,7 @@ include Persistency
 # drag the panel edge) so rebuild timing and invalidation match the running GUI.
 
 private def make_demo_app : EmbraceApp
-    app = EmbraceApp.new
-    persistency = app.persistency
-    hash = Hash(String, FieldLID | TableLID | RecordLID).new
-    help = TableReader(Persistency::Default, Persistency::Cell).new(persistency, hash)
-    help << <<-EOT
+    Fixtures.app(<<-EOT, open: "Allocations")[0]
         Persons
         Person | City
         Alan | Boston
@@ -57,19 +54,6 @@ private def make_demo_app : EmbraceApp
         Riley | Arts | 100
         Amanita | Arts | 100
     EOT
-    alloc_lid = hash["Allocations"].as(TableLID)
-    app.shapes.clear
-    app.shapes << ShapeState.new("Allocations", persistency, persistency.context.clone, alloc_lid)
-    app.request_rebuild
-    app
-end
-
-private def click_widget(app : EmbraceApp, id : String) : Nil
-    w = app.find(id) || raise "Widget '#{id}' not found"
-    b = w.absolute_bounds
-    center = CrymbleUI::Vec2.new(b.x + b.width / 2, b.y + b.height / 2)
-    app.handle_mouse_down(center)
-    app.handle_mouse_up(center)
 end
 
 # The chip container has no id of its own — reach it through the filter row that does.
@@ -102,9 +86,9 @@ describe "Filter chips re-flow when the shape panel is resized" do
         raise "Person column not found in #{shape.column_names}" if person_col.nil?
 
         # The tester's steps: expand Filter, then "Add filter: Person".
-        click_widget(app, "filter_#{shape.id}")
+        Fixtures.click(app, "filter_#{shape.id}")
         renderer.settle_rendering(app)
-        click_widget(app, "filter_add_#{person_col}_#{shape.id}")
+        Fixtures.click(app, "filter_add_#{person_col}_#{shape.id}")
         renderer.settle_rendering(app)
 
         flow = chip_flow(app, person_col, shape.id)

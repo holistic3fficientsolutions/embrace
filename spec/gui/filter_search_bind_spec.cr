@@ -3,6 +3,7 @@ require "../../spec/spec_helper"
 require "../../src/gui/embrace"
 require "../../src/constants"
 require "crymble-ui/testing/test_renderer"
+require "./support/fixtures"
 
 include Persistency
 
@@ -12,23 +13,15 @@ include Persistency
 # and that the debounce is preserved (see filter_search_debounce_spec).
 
 private def make_filter_app(*cols : Int32) : EmbraceApp
-  app = EmbraceApp.new
-  persistency = app.persistency
-  hash = Hash(String, FieldLID | TableLID | RecordLID).new
-  help = TableReader(Persistency::Default, Persistency::Cell).new(persistency, hash)
-  help << <<-EOT
+  app = Fixtures.app(<<-EOT)[0]
     T
     A | B
     north | widget
     south | gadget
     east | widget
   EOT
-  t_lid = hash["T"].as(TableLID)
-  app.shapes.clear
-  shape = ShapeState.new("T", persistency, persistency.context.clone, t_lid)
-  app.shapes << shape
+  shape = app.shapes.first
   cols.each { |c| shape.filter_add(c, Set(Cell).new) } # activate a filter → its search box appears
-  app.request_rebuild
   app
 end
 

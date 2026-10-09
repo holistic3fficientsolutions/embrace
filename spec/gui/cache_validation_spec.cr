@@ -6,6 +6,7 @@ require "../../src/gui/embrace"
 require "../../src/debug-helper"
 require "../../src/constants"
 require "crymble-ui/testing/test_renderer"
+require "./support/fixtures"
 
 include Persistency
 
@@ -28,11 +29,7 @@ end
 # Mirrors do_newfile_demo's data verbatim (the minimum subset needed to exercise
 # filter/commit/drill/diff flows realistically).
 private def make_demo_app : {EmbraceApp, Hash(String, FieldLID | TableLID | RecordLID)}
-    app = EmbraceApp.new
-    persistency = app.persistency
-    hash = Hash(String, FieldLID | TableLID | RecordLID).new
-    help = TableReader(Persistency::Default, Persistency::Cell).new(persistency, hash)
-    help << <<-EOT
+    Fixtures.app(<<-EOT, open: "Allocations")
         Projects
         Project
         Arts
@@ -88,12 +85,6 @@ private def make_demo_app : {EmbraceApp, Hash(String, FieldLID | TableLID | Reco
         Riley | Present | Arts | 100
         Amanita | Present | Arts | 100
     EOT
-    alloc_lid = hash["Allocations"].as(TableLID)
-    app.shapes.clear
-    ctx = persistency.context.clone
-    app.shapes << ShapeState.new("Allocations", persistency, ctx, alloc_lid)
-    app.request_rebuild
-    {app, hash}
 end
 
 describe "Cache validation — embrace scenarios" do
@@ -309,6 +300,7 @@ describe "Cache validation — embrace scenarios" do
 end
 
 {% else %}
+require "spec"
 
 # When the flag isn't set, this spec is a no-op. Print a hint and skip.
 describe "Cache validation — embrace scenarios" do

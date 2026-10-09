@@ -56,7 +56,7 @@ end
 # THE TITLE NAMES THE TABLE AS THE SHAPE'S OWN CONTEXT HAS IT, not as the ambient one does.
 #
 # `table_name` read `display_name` under whatever context happened to be current, and the panel
-# build calls `display_title` bare (embrace.cr:437) - so a shape whose context carries a rename
+# build calls `display_title` bare (EmbraceApp#build_shape_panel) - so a shape whose context carries a rename
 # the ambient context does not titled itself with the ambient name. Measured 2026-09-22: the
 # shape's context said "People", the ambient said "Persons", and the panel showed "Persons".
 #

@@ -6,6 +6,17 @@ require "../../src/global"
 include Table # in order to be able to test protected methods
 
 describe Table::Lazy::Raw do
+    # A Derived table's version is the version of its input: after a parent write it moves - never the stale one of
+    # its first build.
+    it "Derived follows its parent's version" do
+        parent = Table::Lazy::Raw::Memory(BaseCell).new([1, 1])
+        derived = Table::Lazy::Raw::Derived(BaseCell).new(parent) { |table| table }
+        derived.size # built
+        before = derived.version
+        parent[[0, 0]] = 5i64
+        derived.version.should_not eq(before)
+        derived.version.should eq(parent.version)
+    end
     it "special sizes" do
         # - special tables with table[row][col]; num_rows=table.size, num_cols=table[0].size
         #     - 1x2: [[1,2]]

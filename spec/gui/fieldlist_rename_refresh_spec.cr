@@ -4,6 +4,7 @@ require "../../src/gui/embrace"
 require "../../src/debug-helper"
 require "../../src/constants"
 require "crymble-ui/testing/test_renderer"
+require "./support/fixtures"
 
 include Persistency
 
@@ -25,22 +26,12 @@ include Persistency
 # "fixes" the display.
 
 private def make_data_app : EmbraceApp
-  app = EmbraceApp.new
-  persistency = app.persistency
-  hash = Hash(String, FieldLID | TableLID | RecordLID).new
-  help = TableReader(Persistency::Default, Persistency::Cell).new(persistency, hash)
-  help << <<-EOT
+  Fixtures.app(<<-EOT)[0]
       Data
       ColA | ColB
       Person | City
       Alan | Boston
   EOT
-  data_lid = hash["Data"].as(TableLID)
-  app.shapes.clear
-  ctx = persistency.context.clone
-  app.shapes << ShapeState.new("Data", persistency, ctx, data_lid)
-  app.request_rebuild
-  app
 end
 
 # Names as the Field List displays them (Rank pseudo-field + user fields).
@@ -51,18 +42,6 @@ private def fieldlist_names(shape) : Array(String)
   end
 end
 
-private def first_data_cell(adapter, rows, cols) : Tuple(Int32, Int32)
-  rows.each do |r|
-    cols.each do |c|
-      next if adapter.cell_get_header_info({r, c})
-      v = adapter.cell_read({r, c})
-      next if v == "" || v.is_a?(ReferenceCell)
-      return {r, c}
-    end
-  end
-  raise "no data cell"
-end
-
 describe "Bug report #2: Field List stale after 'take field names from record'" do
   it "Field List shows the new field names immediately after the rename" do
     app = make_data_app
@@ -70,8 +49,7 @@ describe "Bug report #2: Field List stale after 'take field names from record'" 
     renderer.settle_rendering(app)
     shape = app.shapes.first
     adapter = shape.matrix_adapter.not_nil!
-    rows, cols = adapter.get_scrollorder
-    r, c = first_data_cell(adapter, rows, cols)
+    r, c = Fixtures.first_data_cell(adapter)
 
     fieldlist_names(shape).should eq(["Rank", "ColA", "ColB"]) # precondition
 
@@ -91,8 +69,7 @@ describe "Bug report #2: Field List stale after 'take field names from record'" 
     renderer.settle_rendering(app)
     shape = app.shapes.first
     adapter = shape.matrix_adapter.not_nil!
-    rows, cols = adapter.get_scrollorder
-    r, c = first_data_cell(adapter, rows, cols)
+    r, c = Fixtures.first_data_cell(adapter)
 
     adapter.cell_transform_to_name({r, c})
     shape.update(true)

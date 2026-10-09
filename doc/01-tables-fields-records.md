@@ -103,9 +103,11 @@ These are defined in the `MetaFieldLIDs` pseudo-enum in `src/persistency.cr`:
 | `RefersTo` | -6 | `source_field_lid → target_field_lid` (reference typing) |
 | `BelongsTo` | -7 | `field_lid or record_lid → table_lid` (ownership) |
 
-The `@meta_version` counter in `Backend` increments on every meta-field write,
-separately from `@version` which increments on every write. This distinction
-lets the GUI know when structure (not just data) has changed.
+The `@meta_version` counter in `Backend` increments on every meta-field write and
+whenever a commit is opened (the commit graph is metadata), separately from
+`@version` which increments on every write. This distinction lets the GUI know when
+structure (not just data) has changed: the field tree and the table and field pickers
+key on it, so a cell edit does not rebuild them.
 
 ## Ordering via Linked Lists
 

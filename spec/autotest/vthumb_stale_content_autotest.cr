@@ -103,14 +103,13 @@ class Driver
     h = lay.bounds.height.to_i
     return [] of String if w < 50 || h < 50
     # Sample WHERE THE COMPOSITOR SAMPLES. Texture (0,0) is the content coord `buffer_origin`, and
-    # the composite reads at `scroll_offset - buffer_origin` (layer.cr:243-276). Reading (0,0)
+    # the composite reads at `scroll_offset - buffer_origin` (Layer#viewport_sample_origin). Reading (0,0)
     # blindly compares DIFFERENT CONTENT whenever the buffer has recentred — a difference that is
     # correct behaviour, not staleness. The first cut of this instrument did exactly that.
     ox = 0
     oy = 0
-    # CrSFMLBackend#get_pixels does image.get_pixel(x+dx, y+dy) with NO bounds check, so an
-    # out-of-range rect SEGFAULTS the process (observed). Clamp here; the unguarded read is
-    # filed separately.
+    # CrSFMLBackend#get_pixels raises ArgumentError on a rect outside the buffer (it used to
+    # segfault), so clamp to the backend's size here.
     tw = be.width
     th = be.height
     ox = ox.clamp(0, {tw - 1, 0}.max)
@@ -136,10 +135,10 @@ class Driver
 
 
   # The ScrollView that owns the matrix's scrollbars. VirtualMatrix delegates scrollbar hits to it
-  # (virtual_matrix.cr:121-123), and the THUMB DRAG goes through it — not through `scroll_offset=`.
+  # (VirtualMatrix#hit_test), and the THUMB DRAG goes through it — not through `scroll_offset=`.
   # That distinction is the whole point of this run: the property setter calls apply_scroll
   # directly, while the real gesture goes ScrollView -> sync_from_scroll_view, which shifts the
-  # compositor and DEFERS the cell create/destroy to pre_render_flush (virtual_matrix.cr:1942-1952).
+  # compositor and DEFERS the cell create/destroy to VirtualMatrix#pre_render_flush.
   private def scroll_view : CrymbleUI::ScrollView?
     m = matrix
     return nil unless m

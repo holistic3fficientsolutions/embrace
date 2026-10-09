@@ -105,10 +105,14 @@ class Table::Lazy::Aggregate(T) < Table::Lazy::Base(T)
         end
     end
     protected def map_cell(index : Index) : {Table::Lazy::Raw::Base(T),Index}
+        map_cell?(index) || assert(false)
+    end
+    # The underlying table and index of a cell, or nil for a DEAD one (no aggregate there, or none defined).
+    protected def map_cell?(index : Index) : {Table::Lazy::Raw::Base(T),Index}?
         update
-        res = mymap_cell(index)
-        assert(res && !res[1].nil?)
-        {res[0], res[1].not_nil!}
+        if (res = mymap_cell(index)) && (index2 = res[1])
+            {res[0], index2}
+        end
     end
     private def mymap_cell(index : Index) : {Table::Lazy::Raw::Base(T),Index|Nil} | Nil
         s = @parent.size[0]
@@ -227,11 +231,17 @@ class Table::Lazy::Pivot::Simple(T,U) < Table::Lazy::Raw::Base(T)
         res
     end
     protected def map_cell(index : Index) : {Table::Lazy::Raw::Base(T),Index}
+        map_cell?(index) || assert(false) # we should only be called for live header cells
+    end
+    # The table behind a header cell (its first candidate), or nil for a DEAD cell: outside the headers (a padded
+    # sub-header's extra row or column included), no table there, or a table with no rows - a group that
+    # "(Show all records?)" brings in although nothing falls into it.
+    protected def map_cell?(index : Index) : {Table::Lazy::Raw::Base(T),Index}?
         update
-        assert(in_header_bounds?(index)) # we should only be called for header cells
-        cell = @tables[index]
-        assert(cell.size[0] > 0)
-        {cell, [0]} # return first candidate of tabs
+        return unless in_header_bounds?(index)
+        if (cell = @tables[index]?) && cell.size[0] > 0
+            {cell, [0]}
+        end
     end
     protected def map_hyperplane(dimension : Int32, index : Index) : {Table::Lazy::Raw::Base(T),Int32,Index}|Nil
         raise EmbraceException.new("map_hyperplane on Simple not defined")
@@ -249,9 +259,10 @@ class Table::Lazy::Pivot::Simple(T,U) < Table::Lazy::Raw::Base(T)
         update
         @tables.cols
     end
-    def version : Int32 # gets incremented for every #set; this is the trigger for updating caches
-        update if !@version
-        @version.not_nil!
+    # The version of its parent - derives nothing (a stale table rebuilds on its next DATA read, under exactly this
+    # version).
+    def version : Int32
+        @parent.version
     end
     protected def get_clusters(index : Index) : Hash(Int32, {T, Int32?}) # column_index => {value, rank}
         res = Hash(Int32, {T, Int32?}).new
@@ -788,18 +799,18 @@ class Table::Lazy::Pivot::Hierarchic(T,U,V) < Table::Lazy::Raw::Base(T)
         (0..1).map {|i| (index2[i]+offset2[i]).as(Int32)} # return new position
     end
     # Route a cell index one level down: map_index (to Simple or Aggregate), then that table's
-    # map_cell (to the next underlying table — from there Lazy::Base routes on to the root).
-    # Returns nil for "dead" cells, where the routing raises. Shared by the per-column
-    # hyperplane_get_name / hyperplane_get_id resolvers below.
+    # map_cell? (to the next underlying table — from there Lazy::Base routes on to the root).
+    # Returns nil for a dead cell. Shared by the per-column hyperplane_get_name / hyperplane_get_id
+    # resolvers below.
     private def route_cell_to_parent(index : Index)
-        table, index2 = map_index(index) # to Simple or Aggregate; deliberately OUTSIDE the rescue — an un-updated pivot must stay loud (No Fallbacks)
-        begin
-            table.map_cell(index2) # to next underlying table
-        rescue # since we have some "dead" cells
-            nil
+        table, index2 = map_index(index)
+        case table
+        when Simple, Aggregate then table.map_cell?(index2)
+        else assert(false) # the header tree holds Simple tables inside, Aggregate tables at its leaves
         end
     end
     def hyperplane_get_name(dimension : Int32, index : Index) : String
+        update
         # dimension gets ignored for Hierarchic
         if routed = route_cell_to_parent(index)
             routed[0].hyperplane_get_name(1, routed[1]) # will be routed to root table (VirtualTable)
@@ -808,6 +819,7 @@ class Table::Lazy::Pivot::Hierarchic(T,U,V) < Table::Lazy::Raw::Base(T)
         end
     end
     def hyperplane_get_id(dimension : Int32, index : Index) : Int32? # flat root column id; nil on dead cells
+        update
         # dimension gets ignored for Hierarchic
         route_cell_to_parent(index).try { |table, index2| table.hyperplane_get_id(1, index2) }
     end
@@ -897,16 +909,22 @@ class Table::Lazy::Pivot::Hierarchic(T,U,V) < Table::Lazy::Raw::Base(T)
     protected def map_hyperplane(dimension : Int32, index : Index) : {Table::Lazy::Raw::Base(T),Int32,Index}|Nil
         assert(false) # we define #hyperplane_{add|remove|move} on our own
     end
-    def version : Int32 # gets incremented for every #set; this is the trigger for updating caches
-        update
-        @version.not_nil!
+    # The version of its inputs - derives nothing of its own (a stale pivot rebuilds on its next DATA read, once, under
+    # exactly this version); it syncs the Fieldlist (and through it, when stale, the VirtualTable root) and the
+    # Configurator, as any read does.
+    def version : Int32
+        inputs_version
+    end
+
+    private def inputs_version : Int32
+        @parent.version + @fields.version
     end
     # Instrumentation: how many times the full hierarchy (tree + offsets + projections) was rebuilt.
     # A rebuild is O(rows); a stable version must not produce one.
     class_property rebuild_count : Int64 = 0_i64
 
     private def update # the update mechanism, should be called at the beginning in every method that gets/sets some data
-        version = @parent.version + @fields.version
+        version = inputs_version
         if !is_multiassign? && (version != @version)
             Hierarchic.rebuild_count += 1
             @constrained_references.clear

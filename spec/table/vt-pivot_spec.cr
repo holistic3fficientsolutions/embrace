@@ -1030,7 +1030,7 @@ describe Table::Lazy::Pivot do
         fieldlist_table = Table::Lazy::Raw::Indexed.new(fieldlist_table, 1)
         hier_pivot_table = Table::Lazy::Pivot::Hierarchic(Cell,BaseCell,FieldlistCell).new(vt, fieldlist_table)
         hier_pivot_table.get_assignability([0,0]).should eq(Table::Lazy::Pivot::Assignability::Indirectly)
-        hier_pivot_table.hyperplane_add(0, [0,0]) # triggered crash at virtualtable.cr:500, #hyperplane_add
+        hier_pivot_table.hyperplane_add(0, [0,0]) # triggered a crash in VirtualTable#hyperplane_add
     end
     it "assigning non-reference to reference raises exception" do
         l, hash = SpecHelpers::VTPivot.setup
@@ -1793,7 +1793,7 @@ describe Table::Lazy::Pivot do
             hier_pivot_table.hyperplane_add(0, [2,1])
         end
         c.is_selected?(c.tree[Table::VirtualTable::PseudoFields::ShowAll]).should eq(false)
-        c.toggle_select(c.tree[Table::VirtualTable::PseudoFields::ShowAll]) # in case this is set, GUI crashed right after following ConditionsNotMet, before introduction of #force_update
+        c.toggle_select(c.tree[Table::VirtualTable::PseudoFields::ShowAll]) # in case this is set: the GUI once crashed right after a ConditionsNotMet here
         ref2rankvalue(hier_pivot_table.to_a2).should eq([
             [NilDeadArea  , NilDeadArea, nil, "Former", "Present"],
             ["Middleearth", "3-Sauron" , nil, 100     , nil      ],
@@ -1995,5 +1995,35 @@ describe Table::Lazy::Pivot do
         expect_raises(ConditionsNotMet) do
             hier_pivot_table[[1,1]] = 42i64 # assignment after hyperplane was inserted
         end
+    end
+    # Every Hierarchic getter updates before it reads - the name and id resolvers too. Asked FIRST, on a pivot
+    # nothing had updated yet, they raised in map_index; they only ever passed after something else had.
+    it "answers a cell's name and column id as the first call on a fresh pivot" do
+        l = Persistency::Default.new
+        hash = Hash(String, FieldLID|TableLID|RecordLID).new
+        help = TableReader(Persistency::Default,Persistency::Cell).new(l, hash)
+        help << <<-EOT
+            table
+            c1  | c2  | c3
+            c1a | r1a | a1
+            c1b | r1b | a2
+        EOT
+        fresh = -> do
+            c = Table::VirtualTable::Configurator(Cell,BaseCell).new(l, hash["table"])
+            c.toggle_select(c.tree)
+            c.toggle_select(c.tree[PseudoFields::Rank]) # de-select Rank again
+            fieldlist_table = Helper(FieldlistCell).array2table(4, [
+                0, Table::Lazy::Pivot::Classes::Column.value , 0, true,
+                1, Table::Lazy::Pivot::Classes::Row.value    , 0, true,
+                ])
+            Table::Lazy::Pivot::Hierarchic(Cell,BaseCell,FieldlistCell).new(c.run, Table::Lazy::Raw::Indexed.new(fieldlist_table, 1))
+        end
+        warmed = fresh.call
+        warmed.size # updated by an ordinary read first
+        cell = [0, 1] # a column header cell
+        expected_name = warmed.hyperplane_get_name(1, cell)
+        expected_name.should_not be_empty # control: the cell has a name to get
+        fresh.call.hyperplane_get_name(1, cell).should eq expected_name
+        fresh.call.hyperplane_get_id(1, cell).should eq warmed.hyperplane_get_id(1, cell)
     end
 end

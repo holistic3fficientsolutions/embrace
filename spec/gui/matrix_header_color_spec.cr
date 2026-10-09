@@ -4,31 +4,9 @@ require "../../src/gui/shape"
 require "../../src/debug-helper"
 require "../../src/constants"
 require "crymble-ui"
+require "./support/fixtures"
 
 include Persistency
-
-# Reuse the demo fixture shape from matrix_adapter_spec.
-private def make_demo_persistency : Persistency::Default
-  persistency = Persistency::Default.new
-  hash = Hash(String, FieldLID | TableLID | RecordLID).new
-  help = TableReader(Persistency::Default, Persistency::Cell).new(persistency, hash)
-  help << <<-EOT
-      Cities
-      City | Country
-      Arizona | USA
-      Boston | USA
-
-      Persons
-      Person | City_City
-      Alan | Boston
-  EOT
-  persistency
-end
-
-private def create_shape(persistency : Persistency::Default) : ShapeState
-  context = persistency.context.clone
-  ShapeState.new("Shape", persistency, context)
-end
 
 # Expected header tint = the shared field-class palette (row=green, col=blue,
 # per-level saturation via GUI::FieldClassColors) — the exact helper the field
@@ -53,8 +31,8 @@ end
 # list.
 describe SimpleMatrixAdapter do
   it "paints matrix header cells with the fieldlist class palette" do
-    persistency = make_demo_persistency
-    shape = create_shape(persistency)
+    persistency = Fixtures.cities_persons
+    shape = ShapeState.new("Shape", persistency, persistency.context.clone)
     adapter = shape.matrix_adapter.not_nil!
     rows, cols = adapter.get_scrollorder
     header_count = 0

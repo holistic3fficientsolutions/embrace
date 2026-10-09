@@ -35,9 +35,9 @@ end
 # shows up, while DUPLICATING a shape on the exact same data is fast. The
 # difference is the right thing to measure:
 #
-#   - `dup_shape` (src/gui/shape.cr:781) uses the CLONE constructor at line
-#     756, which reuses the parent's Configurator and Fieldlist (cheap).
-#   - `spawn_diff_shape` (src/gui/shape.cr:804) uses the REGULAR constructor
+#   - `ShapeState#dup_shape` uses the CLONE constructor (the protected
+#     `initialize(title, other)`), which reuses the parent's Configurator and Fieldlist (cheap).
+#   - `ShapeState#spawn_diff_shape` uses the REGULAR constructor
 #     `ShapeState.new(title, persistency, ctx, table_lid)` which rebuilds
 #     the Configurator from scratch + runs `fieldlist_normalize!` +
 #     `apply_diff_record_filter!`. That's the hot path.

@@ -3,6 +3,7 @@ require "../../spec/spec_helper"
 require "../../src/gui/embrace"
 require "../../src/constants"
 require "crymble-ui/testing/test_renderer"
+require "./support/fixtures"
 
 include Persistency
 
@@ -12,11 +13,7 @@ include Persistency
 # mouse stays on it, so sweeping across the matrix (a single widget) must not
 # re-walk to the root every frame.
 private def make_matrix_app : EmbraceApp
-    app = EmbraceApp.new
-    persistency = app.persistency
-    hash = Hash(String, FieldLID | TableLID | RecordLID).new
-    help = TableReader(Persistency::Default, Persistency::Cell).new(persistency, hash)
-    help << <<-EOT
+    Fixtures.app(<<-EOT)[0]
         T
         A | B | C
         a1 | b1 | c1
@@ -24,11 +21,6 @@ private def make_matrix_app : EmbraceApp
         a3 | b3 | c3
         a4 | b4 | c4
     EOT
-    t_lid = hash["T"].as(TableLID)
-    app.shapes.clear
-    app.shapes << ShapeState.new("T", persistency, persistency.context.clone, t_lid)
-    app.request_rebuild
-    app
 end
 
 describe "hover statusbar perf" do

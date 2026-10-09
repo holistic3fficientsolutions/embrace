@@ -67,12 +67,13 @@ branch tips.
 `ContextStack` allows temporary context switching:
 
 ```crystal
-persistency.contexts.push(other_context)
-# ... read data at different commit ...
-persistency.contexts.pop
+persistency.with_context(other_context) do
+  # ... read (or write) at that context's commit ...
+end
 ```
 
-This is used for transactions and temporary reads without affecting the main context.
+`with_context` is the one way to switch: it takes the context off the stack again on every path, a raise
+included, and returns the block's value.
 
 ## History Navigation in the GUI
 
@@ -115,6 +116,11 @@ Each Shape has its own `@context`. This means:
 - Editing in one Shape at its current commit is visible to other Shapes
   (if they are at or after that commit)
 
+A Shape opened with **New Shape** (^N) starts on the branch of the Shape in front — the one
+you were working in — at that branch's tip, even if that Shape is looking at an older commit.
+With no Shape open it starts at the newest tip reachable from where the file was loaded.
+A new table (paste or xlsx import, Shape > Edit) likewise lands on the invoking Shape's branch.
+
 ## What Gets Committed
 
 | Committed (in history) | Not committed (volatile) |
@@ -127,12 +133,15 @@ Each Shape has its own `@context`. This means:
 
 ## Transactions
 
-`transaction(&)` in `Backend::Memory` provides a poor man's transaction:
+`transaction(&)` in `Backend::Memory` makes an operation all or nothing:
 - Clones the entire persistency state before the block
-- On exception: replaces state with the clone (rollback)
+- On exception: replaces the data with the clone and puts the commit position of the context the operation ran in
+  back (a write on a closed commit opens a new one - that is taken back too); the version counters do NOT go back,
+  they move past every value reached inside, so no cache can mistake the restored state for one it saw
 - On success: the changes are kept
 
-This is used for operations that must be atomic (e.g., factor-out).
+It is used where a refusal can come partway through: inserting a record in a Shape (Ins / Insert record(s)),
+importing a sheet or pasting a new table, and a selective commit.
 
 ## See Also
 

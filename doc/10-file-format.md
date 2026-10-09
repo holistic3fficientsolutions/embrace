@@ -69,6 +69,7 @@ failure leaves both the on-disk file and the in-memory document exactly as they 
 | Method | Action |
 |--------|--------|
 | `save_document(name) : Bool` | Serialize to memory first, write a sibling temp file, `fsync`, then atomically `rename` it over the target — so a serialization or write failure never damages the file already on disk. |
+| `write_recovery_copy : String?` | When an error ends the app with unsaved work (`Recovery.guarded` around the main loop): the same atomic write, into the recovery folder under a new name, only once the copy is checked to parse back. See `doc/modules/07-app.md`, invariant 26. |
 | `load_document(name) : Bool` | Parse into a **scratch** persistency; swap it in only on full success — so a failed load leaves the current document (and the good file it names) untouched, never a half-loaded/empty split-brain. |
 | `import_document(shape, file, table) : Bool` | Import wrapped in a `transaction`; a failed import adds nothing (no half-table) and leaks no context frame. |
 | `do_save` / `do_save_as` / `do_load` | Thin dialog wrappers over the above; `do_load` also gates on `protect_unsaved_changes`. |
@@ -116,7 +117,9 @@ disagree: a blank `.xlsx` cell must stay undefined, a blank TSV field is the emp
 ## Clipboard (TSV)
 
 Implementation: `TSV` in `src/tsv.cr`; the walk is `SimpleMatrixAdapter#to_tsv`
-(`src/gui/shape.cr`), the two commands are in `src/gui/embrace_file_ops.cr`.
+(`src/gui/shape.cr`), the two commands are in `src/gui/embrace_file_ops.cr`. Pasting into an open
+cell editor reads one quoted cell as its value (`TSV.single_field`, set as the editor's paste
+transform in `SimpleMatrixAdapter#cell_paint`) - see [08-shapes](08-shapes.md).
 
 **Copy Shape to clipboard** puts the Shape's *rendered rectangle* on the system
 clipboard — every cell the user sees, header bands and dead pivot intersections
@@ -124,8 +127,9 @@ included, with no header/data separation. A Shape may be a pivot, a Kanban board
 a floor plan, so it has no canonical header row to split off; filtering per cell
 would drop a different number of cells from each row and destroy the alignment.
 
-**Paste clipboard as new table** creates a table whose fields are unnamed and opens
-a Shape on it. Where the first row does hold column names, "Take field names from
+**Paste clipboard as new table** (Shape > Edit) creates a table whose fields are
+unnamed and opens a Shape on it. Like **Import xlsx sheet as new table...** beside it,
+the table lands on the branch of the Shape it was invoked from. Where the first row does hold column names, "Take field names from
 record" (cell context menu) promotes them — that operation also *consumes* the row.
 
 Note the asymmetry with XLSX above: `export` writes **table truth with headers**,

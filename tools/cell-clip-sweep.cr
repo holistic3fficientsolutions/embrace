@@ -108,7 +108,7 @@ class CompositeProbe < EmbraceApp
       puts "MEASURE: missing root/renderer"
       return
     end
-    all = CrymbleUI::Layer.active_layers(root).sort_by(&.z_index)
+    all = CrymbleUI::Layer.composite_order(root)
     grid = all.find { |l| l.id.starts_with?("matrix_content_") }
     sticky_col = all.find { |l| l.id.starts_with?("sticky_col_") }
     sticky_row = all.find { |l| l.id.starts_with?("sticky_row_") }

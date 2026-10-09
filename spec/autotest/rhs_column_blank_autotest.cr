@@ -6,7 +6,7 @@ require "../../src/gui/probe"
 # THE REPORTED SYMPTOM, from Wolfgang's own data (/tmp/text.txt, screenshots 2026-09-15):
 # paste a big .tsv, switch on Auto-size, widen the Shape — and the LAST column (c8) renders as flat
 # dark grey: its header is drawn, its body cells are not there at all. Ctrl+0 does not help; zooming
-# does, and zoom is one of the three sites that re-arm @auto_size_pending (virtual_matrix.cr:1571),
+# does, and zoom is one of the three sites that re-arm @auto_size_pending (VirtualMatrix#handle_zoom_change),
 # so the state right after auto-size is wrong and a re-measure repairs it.
 #
 # The data matters and is NOT synthetic here: 2561 records x 7 fields, and field 7 (the app's c8) is
@@ -70,7 +70,7 @@ class Driver
     vx0 = m.scroll_offset.x
     vx1 = vx0 + m.bounds.width
     overlaps = x1 > vx0 && x0 < vx1
-    # DIRECT OBSERVATION of the creation-region cache (virtual_matrix.cr:2860-2882). The cells come
+    # DIRECT OBSERVATION of the creation-region cache (VirtualMatrix#compute_region_cached). The cells come
     # from here, NOT from visible_cols. Key is {ns, ib} where
     #   max_pos = scroll_pos + viewport_size + CREATION_BUFFER
     #   ib      = cumulative.bsearch_index { |p| p > max_pos }
@@ -82,7 +82,7 @@ class Driver
     log("#{tag}: CREATION-REGION CACHE key=#{ckey.inspect} result=#{cres.inspect} " \
         "| viewport_for_key=#{vpw.round(0)} max_pos=#{maxpos} | last column in creation region? " \
         "#{cres.try(&.includes?(m.@col_widths.size - 1)).inspect}")
-    # THE TWO ARRAYS THE KEY AND THE FILTER USE. Built at virtual_matrix.cr:2248-2251 —
+    # THE TWO ARRAYS THE KEY AND THE FILTER USE. Built in VirtualMatrix#update_visible_cells —
     #   cumulative   = scroll_order.map{sizes}.accumulate{ }   (NO leading 0)
     #   physical_cum = sizes.accumulate(0){ }                  (WITH a leading 0)
     # The key bsearches `cumulative`; the filter indexes `physical_cum`. Different orders AND
@@ -92,7 +92,7 @@ class Driver
     log("#{tag}: col physical_cum = #{m.@cached_col_physical_cum.inspect}")
     log("#{tag}: row scroll_rank  = #{m.@cached_row_scroll_rank.try(&.first(8)).inspect}…")
     log("#{tag}: row cumulative   = #{m.@cached_row_cumulative.try(&.first(8)).inspect}…")
-    # ROW AXIS — the same function serves rows (virtual_matrix.cr:2369-2371). If the fault is in
+    # ROW AXIS — the same function serves rows (`row_cumulative` in update_visible_cells). If the fault is in
     # compute_region_cached rather than in the column case, a huge ROW must reproduce it vertically.
     rkey = m.@last_creation_row_key
     rres = m.@last_creation_row_result

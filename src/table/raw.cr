@@ -271,9 +271,10 @@ class Table::Lazy::Raw::Derived(T) < Table::Lazy::Raw::Base(T)
     def []=(index : Index, value : T) : Index
         assert(false)
     end
+    # The version of its parent - derives nothing (a stale table re-derives on its next DATA read, under exactly this
+    # version).
     def version : Int32
-        update if !@version
-        @version.not_nil!
+        @parent.version
     end
     private def update # the update mechanism, should be called at the beginning in every method that gets/sets some data
         if !is_multiassign? && (@version != @parent.version)

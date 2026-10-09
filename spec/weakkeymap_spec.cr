@@ -20,7 +20,7 @@ module SpecHelpers::WeakKeyMap
     end
 end
 
-def fn(g, h)
+private def fn(g, h)
     n1 = g.add_node
     h[n1] = "foo"
     h[n1].should eq "foo"

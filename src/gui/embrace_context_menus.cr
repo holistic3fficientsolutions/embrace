@@ -6,19 +6,16 @@
 
 class EmbraceApp < CrymbleUI::App
     def handle_escape : Bool
-        # Escape also cancels a pending cell cut — passively, so it does
-        # not consume an Escape the focused editor still needs (the renderer
-        # routes here before the focused widget). Clearing @cut_cell repaints
-        # the highlight off on the next rebuild.
-        if @cut_cell
-            @cut_cell = nil
-            request_rebuild
-        end
         if @context_menu
             dismiss_context_menu
             return true
         end
-        super
+        return true if super
+        # A pending cell cut goes LAST, and passively (the Escape is not consumed): this runs before the
+        # focused widget, so an Escape that widget will use - aborting an edit, closing a list - leaves the
+        # cut alone; a further Escape then ends it.
+        cancel_cut unless CrymbleUI::Widget.focus_manager?.try(&.focused_widget).try(&.consumes_escape?)
+        false
     end
 
     private def dismiss_context_menu
@@ -56,37 +53,35 @@ class EmbraceApp < CrymbleUI::App
 
     private def show_table_context_menu(shape : ShapeState, node : Interface::GUI::VHTreeAdapter?, table_lid : TableLID, table_name : String, pos : CrymbleUI::Vec2 = CrymbleUI::Vec2.new(300.0, 300.0)) : Nil
         items = [
-            {"Rename table '#{table_name}'...", nil.as(String?), true, ->() {
+            CtxItem.new("rename_table", "Rename table '#{table_name}'...", nil, true, ->() {
                 # Prefill = the RAW stored name (an un-named table prefills an EMPTY box, not the
                 # "(unnamed)" placeholder the menu label shows).
-                shape.persistency.contexts.push(shape.context)
-                raw = shape.persistency.get_value(MetaFieldLIDs::Names, table_lid)
-                shape.persistency.contexts.pop
+                raw = shape.persistency.with_context(shape.context) { shape.persistency.get_value(MetaFieldLIDs::Names, table_lid) }
                 dialog = Dialogs::Renamer.new("Rename table", raw.is_a?(String) ? raw : "") do |name|
-                    shape.persistency.contexts.push(shape.context)
-                    shape.persistency.set_value(MetaFieldLIDs::Names, table_lid, name)
-                    shape.context = shape.persistency.contexts.pop
+                    shape.persistency.with_context(shape.context) do
+                        shape.persistency.set_value(MetaFieldLIDs::Names, table_lid, name)
+                    end
                     shape.update(true)
                     request_rebuild
                 end
                 add_dialog(dialog)
-            }},
-            {"Delete table '#{table_name}'", nil.as(String?), true, ->() {
+            }),
+            CtxItem.new("delete_table", "Delete table '#{table_name}'", nil, true, ->() {
                 @pending_confirm = {"Are you sure to delete table '#{table_name}'?", ->() {
-                    shape.persistency.contexts.push(shape.context)
-                    shape.persistency.remove_table(table_lid)
-                    shape.context = shape.persistency.contexts.pop
+                    shape.persistency.with_context(shape.context) do
+                        shape.persistency.remove_table(table_lid)
+                    end
                     shape.update(true)
                     request_rebuild
                 }}
                 request_rebuild
-            }},
-            {"Associate / dissociate fields...", nil.as(String?), true, ->() {
+            }),
+            CtxItem.new("associate_fields", "Associate / dissociate fields...", nil, true, ->() {
                 if configurator = shape.configurator_ref
                     dialog = Dialogs::DisAssociateFields.new("Associate / Dissociate fields", configurator, shape.context, table_lid)
                     add_dialog(dialog)
                 end
-            }},
+            }),
         ]
         @context_menu = {pos.x, pos.y, "Table context menu", items}
         request_rebuild
@@ -95,32 +90,30 @@ class EmbraceApp < CrymbleUI::App
     private def show_field_context_menu(shape : ShapeState, node : Interface::GUI::VHTreeAdapter, field_lid : FieldLID, table_lid : TableLID, field_name : String, pos : CrymbleUI::Vec2 = CrymbleUI::Vec2.new(300.0, 300.0)) : Nil
         is_reference = !shape.persistency.get_outward_reference(field_lid).nil?
         items = [
-            {"Rename field '#{field_name}'...", nil.as(String?), true, ->() {
+            CtxItem.new("rename_field", "Rename field '#{field_name}'...", nil, true, ->() {
                 # Prefill = the RAW stored name (see the table renamer above).
-                shape.persistency.contexts.push(shape.context)
-                raw = shape.persistency.get_value(MetaFieldLIDs::Names, field_lid)
-                shape.persistency.contexts.pop
+                raw = shape.persistency.with_context(shape.context) { shape.persistency.get_value(MetaFieldLIDs::Names, field_lid) }
                 dialog = Dialogs::Renamer.new("Rename field", raw.is_a?(String) ? raw : "") do |name|
-                    shape.persistency.contexts.push(shape.context)
-                    shape.persistency.set_value(MetaFieldLIDs::Names, field_lid, name)
-                    shape.context = shape.persistency.contexts.pop
+                    shape.persistency.with_context(shape.context) do
+                        shape.persistency.set_value(MetaFieldLIDs::Names, field_lid, name)
+                    end
                     shape.update(true)
                     request_rebuild
                 end
                 add_dialog(dialog)
-            }},
-            {"Delete field '#{field_name}'", nil.as(String?), true, ->() {
+            }),
+            CtxItem.new("delete_field", "Delete field '#{field_name}'", nil, true, ->() {
                 @pending_confirm = {"Are you sure to delete field '#{field_name}'?", ->() {
-                    shape.persistency.contexts.push(shape.context)
-                    tlid = shape.persistency.get_table_lid(field_lid).not_nil!
-                    shape.persistency.remove_field(tlid, field_lid)
-                    shape.context = shape.persistency.contexts.pop
+                    shape.persistency.with_context(shape.context) do
+                        tlid = shape.persistency.get_table_lid(field_lid).not_nil!
+                        shape.persistency.remove_field(tlid, field_lid)
+                    end
                     shape.update(true)
                     request_rebuild
                 }}
                 request_rebuild
-            }},
-            {"Factor out reference / link...", nil.as(String?), !is_reference, ->() {
+            }),
+            CtxItem.new("factor_out", "Factor out reference / link...", nil, !is_reference, ->() {
                 dialog = Dialogs::FactorOut.new("Factoring out / linking '#{field_name}'", shape.persistency, shape.context, field_lid) do |target_table_lid, target_field_lid|
                     tlid = shape.persistency.get_table_lid(field_lid).not_nil!
                     ambiguous = shape.persistency.factor_out_reference(tlid, field_lid, target_table_lid, target_field_lid)
@@ -131,15 +124,15 @@ class EmbraceApp < CrymbleUI::App
                     request_rebuild
                 end
                 add_dialog(dialog)
-            }},
-            {"Factor in reference / unlink", nil.as(String?), is_reference, ->() {
-                shape.persistency.contexts.push(shape.context)
-                tlid = shape.persistency.get_table_lid(field_lid).not_nil!
-                shape.persistency.factor_in_reference(tlid, field_lid)
-                shape.context = shape.persistency.contexts.pop
+            }),
+            CtxItem.new("factor_in", "Factor in reference / unlink", nil, is_reference, ->() {
+                shape.persistency.with_context(shape.context) do
+                    tlid = shape.persistency.get_table_lid(field_lid).not_nil!
+                    shape.persistency.factor_in_reference(tlid, field_lid)
+                end
                 shape.update(true)
                 request_rebuild
-            }},
+            }),
         ]
         @context_menu = {pos.x, pos.y, "Field context menu", items}
         request_rebuild
@@ -152,44 +145,39 @@ class EmbraceApp < CrymbleUI::App
         return unless vm
         rc = vm.point_to_cell(pos) || vm.cursor_rc
         has_content = adapter.cell_has_content?(rc[0], rc[1])
-        items = Array({String, String?, Bool, Proc(Nil)}).new
+        items = Array(CtxItem).new
 
-        items << {"Set to undefined/empty", "Ctrl+U", true, ->() {
+        items << CtxItem.new("set_undefined", "Set to undefined/empty", "Ctrl+U", true, ->() {
             adapter.cell_set_undefined({rc[0], rc[1]})
             shape.update(true)
             request_rebuild
-        }}
-        items << {"Set to true", "Ctrl+T".as(String?), true, ->() {
+        })
+        items << CtxItem.new("set_true", "Set to true", "Ctrl+T", true, ->() {
             adapter.cell_assign({rc[0], rc[1]}, true)
             shape.update(true)
             request_rebuild
-        }}
-        items << {"Cut cell", "Ctrl+X", has_content, ->() {
-            @cut_cell = {shape.id, rc[0], rc[1]}
-        }}
-        items << {"Paste cell", "Ctrl+V", !@cut_cell.nil?, ->() {
-            if c = @cut_cell
-                adapter.cell_move({c[1], c[2]}, {rc[0], rc[1]})
-                @cut_cell = nil
-                shape.update(true)
-                request_rebuild
-            end
-        }}
-        items << {"Insert record(s)", "Ins", true, ->() {
+        })
+        items << CtxItem.new("cut_cell", "Cut cell", "Ctrl+X", has_content, ->() {
+            arm_cut(shape, rc)
+        })
+        items << CtxItem.new("paste_cell", "Paste cell", "Ctrl+V", !live_cut!(shape).nil?, ->() {
+            paste_cut(shape, rc)
+        })
+        items << CtxItem.new("insert_records", "Insert record(s)", "Ins", true, ->() {
             adapter.cell_insert({rc[0], rc[1]})
             shape.update(true)
             request_rebuild
-        }}
-        items << {"Delete record(s)", "Del", true, ->() {
+        })
+        items << CtxItem.new("delete_records", "Delete record(s)", "Del", true, ->() {
             adapter.cell_delete({rc[0], rc[1]})
             shape.update(true)
             request_rebuild
-        }}
-        items << {"Take field names from record", nil.as(String?), true, ->() {
+        })
+        items << CtxItem.new("field_names_from_record", "Take field names from record", nil, true, ->() {
             adapter.cell_transform_to_name({rc[0], rc[1]})
             shape.update(true)
             request_rebuild
-        }}
+        })
 
         @context_menu = {pos.x, pos.y, "Cell context menu", items}
         request_rebuild
@@ -206,12 +194,12 @@ class EmbraceApp < CrymbleUI::App
 
         if move[0] == :internal
             items = [
-                {"Move field", nil.as(String?), true, ->() {
+                CtxItem.new("move_field", "Move field", nil, true, ->() {
                     execute_vhtree_move(shape, from_adapter, {:internal_move} + move[1..])
-                }},
-                {"Merge fields", nil.as(String?), true, ->() {
+                }),
+                CtxItem.new("merge_fields", "Merge fields", nil, true, ->() {
                     execute_vhtree_move(shape, from_adapter, {:internal_merge} + move[1..])
-                }},
+                }),
             ]
             @context_menu = {pos.x, pos.y, "Move or Merge", items}
             @context_menu_fresh = true
@@ -228,8 +216,7 @@ class EmbraceApp < CrymbleUI::App
         # target table is expanded — mirrors v1's check_move. (Without this the
         # newly-created field defaults hidden.)
         reveal = from_adapter.is_selected? && !!shape.configurator_ref.try(&.is_expanded?(move[5]))
-        persistency.contexts.push(shape.context)
-        begin
+        persistency.with_context(shape.context) do
             case move[0]
             when :internal_move
                 persistency.move_field(move[1], move[2], move[4])
@@ -248,8 +235,6 @@ class EmbraceApp < CrymbleUI::App
                 field_lid = persistency.move_field_outwards(move[1], move[2], move[3], move[4])
                 shape.configurator_ref.try(&.toggle_select(move[5][field_lid])) if reveal
             end
-        ensure
-            shape.context = persistency.contexts.pop
         end
         shape.update(true)
         request_rebuild

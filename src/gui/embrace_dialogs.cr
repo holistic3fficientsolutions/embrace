@@ -5,7 +5,21 @@
 # Extracted from embrace.cr for maintainability
 
 class EmbraceApp < CrymbleUI::App
-    private def build_dialog(dialog : Dialogs::Base) : Nil
+    # A dialog's text field: Enter accepts the dialog, Escape closes it. The window's own Escape shortcut takes
+    # the key first while the dialog is in front; this one closes it when another panel is in front but the
+    # keyboard is still in the field (dialogs are not modal).
+    private def dialog_input_events(dialog : Dialogs::Creator | Dialogs::Renamer | Dialogs::AddField | Dialogs::ImportTable) : Proc(String, CrymbleUI::TextInputEvent, Nil)
+        ->(_value : String, ev : CrymbleUI::TextInputEvent) {
+            if ev.submit?
+                dialog.accept; request_rebuild
+            elsif ev.cancel?
+                dialog.close; request_rebuild
+            end
+            nil
+        }
+    end
+
+    private def build_dialog(dialog : Dialogs::Hosted) : Nil
         case dialog
         when Dialogs::ImportantInformer
             build_informer_dialog(dialog)
@@ -21,8 +35,8 @@ class EmbraceApp < CrymbleUI::App
             build_import_table_dialog(dialog)
         when Dialogs::FactorOut
             build_factor_out_dialog(dialog)
-        when Dialogs::DirBrowser
-            build_dirbrowser_dialog(dialog)
+        when Dialogs::FileBrowser
+            file_dialog(dialog)
         when Dialogs::DisAssociateFields
             build_disassociate_dialog(dialog)
         end
@@ -63,16 +77,8 @@ class EmbraceApp < CrymbleUI::App
             vstack(spacing: 10.0, padding: 10.0) do
                 hstack(spacing: 5.0) do
                     text("Name:")
-                    ti = text_input(dialog.name, id: "#{dialog.id}_name", width: 250.0,
-                        on_event: ->(val : String, ev : CrymbleUI::TextInputEvent) {
-                            dialog.name = val if ev.change?
-                            if ev.submit?
-                                dialog.accept; request_rebuild
-                            elsif ev.cancel?
-                                dialog.close; request_rebuild
-                            end
-                            nil
-                        })
+                    ti = text_input(bind: dialog.name, id: "#{dialog.id}_name", width: 250.0,
+                        on_event: dialog_input_events(dialog))
                     ti.request_focus
                 end
                 hstack(spacing: 10.0) do
@@ -93,16 +99,8 @@ class EmbraceApp < CrymbleUI::App
                 end
                 hstack(spacing: 5.0) do
                     text("New name:")
-                    ti = text_input(dialog.name_new, id: "#{dialog.id}_name", width: 250.0,
-                        on_event: ->(val : String, ev : CrymbleUI::TextInputEvent) {
-                            dialog.name_new = val if ev.change?
-                            if ev.submit?
-                                dialog.accept; request_rebuild
-                            elsif ev.cancel?
-                                dialog.close; request_rebuild
-                            end
-                            nil
-                        })
+                    ti = text_input(bind: dialog.name_new, id: "#{dialog.id}_name", width: 250.0,
+                        on_event: dialog_input_events(dialog))
                     ti.request_focus
                 end
                 hstack(spacing: 10.0) do
@@ -120,56 +118,48 @@ class EmbraceApp < CrymbleUI::App
             vstack(spacing: 10.0, padding: 10.0) do
                 hstack(spacing: 5.0) do
                     text("Field name:")
-                    ti = text_input(dialog.name, id: "#{dialog.id}_name", width: 250.0,
-                        on_event: ->(val : String, ev : CrymbleUI::TextInputEvent) {
-                            dialog.name = val if ev.change?
-                            if ev.submit?
-                                dialog.accept; request_rebuild
-                            elsif ev.cancel?
-                                dialog.close; request_rebuild
-                            end
-                            nil
-                        })
+                    ti = text_input(bind: dialog.name, id: "#{dialog.id}_name", width: 250.0,
+                        on_event: dialog_input_events(dialog))
                     ti.request_focus
                 end
 
                 if !dialog.suppress_reference
                     # Reference table selection
-                    dialog.persistency.contexts.push(dialog.context)
-                    table = dialog.persistency.get_table(MetaFieldLIDs::TableLastTable)
-                    table.sort! { |x, y| x[2].as(String) <=> y[2].as(String) }
-                    table_names = ["(no reference)"] + table.map { |row| dialog.persistency.display_name(row[0].as(Persistency::TableLID)) } # blank -> "(unnamed)"
-                    table_lids = [nil.as(Persistency::TableLID?)] + table.map(&.[0].as(Persistency::TableLID?))
-                    ref_table_idx = table_lids.index(dialog.ref_table_lid) || 0
-
-                    hstack(spacing: 5.0) do
-                        text("References table:")
-                        combo_box(items: table_names, selected: ref_table_idx, width: 200.0, id: "#{dialog.id}_reftable") do |idx|
-                            dialog.ref_table_lid = table_lids[idx]
-                            if rtl = dialog.ref_table_lid
-                                field_lids = dialog.persistency.get_field_lids(rtl)
-                                dialog.ref_field_lid = field_lids.first? ? field_lids.first : nil
-                            else
-                                dialog.ref_field_lid = nil
-                            end
-                            request_rebuild
-                        end
-                    end
-
-                    if rtl = dialog.ref_table_lid
-                        field_lids = dialog.persistency.get_field_lids(rtl)
-                        field_names = field_lids.map { |fl| dialog.persistency.display_name(fl) } # blank -> "(unnamed)"
-                        field_idx = dialog.ref_field_lid ? (field_lids.index(dialog.ref_field_lid) || 0) : 0
+                    dialog.persistency.with_context(dialog.context) do
+                        table = dialog.persistency.get_table(MetaFieldLIDs::TableLastTable)
+                        table.sort! { |x, y| x[2].as(String) <=> y[2].as(String) }
+                        table_names = ["(no reference)"] + table.map { |row| dialog.persistency.display_name(row[0].as(Persistency::TableLID)) } # blank -> "(unnamed)"
+                        table_lids = [nil.as(Persistency::TableLID?)] + table.map(&.[0].as(Persistency::TableLID?))
+                        ref_table_idx = table_lids.index(dialog.ref_table_lid) || 0
 
                         hstack(spacing: 5.0) do
-                            text("References field:")
-                            combo_box(items: field_names, selected: field_idx, width: 200.0, id: "#{dialog.id}_reffield") do |idx|
-                                dialog.ref_field_lid = field_lids[idx]
+                            text("References table:")
+                            combo_box(items: table_names, selected: ref_table_idx, width: 200.0, id: "#{dialog.id}_reftable") do |idx|
+                                dialog.ref_table_lid = table_lids[idx]
+                                if rtl = dialog.ref_table_lid
+                                    field_lids = dialog.persistency.get_field_lids(rtl)
+                                    dialog.ref_field_lid = field_lids.first? ? field_lids.first : nil
+                                else
+                                    dialog.ref_field_lid = nil
+                                end
                                 request_rebuild
                             end
                         end
+
+                        if rtl = dialog.ref_table_lid
+                            field_lids = dialog.persistency.get_field_lids(rtl)
+                            field_names = field_lids.map { |fl| dialog.persistency.display_name(fl) } # blank -> "(unnamed)"
+                            field_idx = dialog.ref_field_lid ? (field_lids.index(dialog.ref_field_lid) || 0) : 0
+
+                            hstack(spacing: 5.0) do
+                                text("References field:")
+                                combo_box(items: field_names, selected: field_idx, width: 200.0, id: "#{dialog.id}_reffield") do |idx|
+                                    dialog.ref_field_lid = field_lids[idx]
+                                    request_rebuild
+                                end
+                            end
+                        end
                     end
-                    dialog.persistency.contexts.pop
                 end
 
                 hstack(spacing: 10.0) do
@@ -187,35 +177,22 @@ class EmbraceApp < CrymbleUI::App
             vstack(spacing: 10.0, padding: 10.0) do
                 hstack(spacing: 5.0) do
                     text("Filename:")
-                    ti = text_input(dialog.filename, id: "#{dialog.id}_file", width: 300.0,
-                        on_event: ->(val : String, ev : CrymbleUI::TextInputEvent) {
-                            dialog.filename = val if ev.change?
-                            if ev.submit?
-                                dialog.accept; request_rebuild
-                            elsif ev.cancel?
-                                dialog.close; request_rebuild
-                            end
-                            nil
-                        })
-                    ti.request_focus
+                    ti = text_input(bind: dialog.filename, id: "#{dialog.id}_file", width: 300.0,
+                        on_event: dialog_input_events(dialog))
+                    unless dialog.focused_once # once: a file dialog opened on top keeps the keyboard
+                        dialog.focused_once = true
+                        ti.request_focus
+                    end
                 end
                 hstack(spacing: 5.0) do
                     text("Table name:")
-                    text_input(dialog.tablename, id: "#{dialog.id}_table", width: 250.0,
-                        on_event: ->(val : String, ev : CrymbleUI::TextInputEvent) {
-                            dialog.tablename = val if ev.change?
-                            if ev.submit?
-                                dialog.accept; request_rebuild
-                            elsif ev.cancel?
-                                dialog.close; request_rebuild
-                            end
-                            nil
-                        })
+                    text_input(bind: dialog.tablename, id: "#{dialog.id}_table", width: 250.0,
+                        on_event: dialog_input_events(dialog))
                 end
                 hstack(spacing: 10.0) do
                     button("Browse...", id: "#{dialog.id}_browse") do
-                        browser = Dialogs::DirBrowser.new("Select file", dialog.wildcard) do |path|
-                            dialog.filename = path
+                        browser = Dialogs::FileBrowser.new("Select file", dialog.wildcard) do |path|
+                            dialog.filename.set(path)
                             request_rebuild
                         end
                         add_dialog(browser)
@@ -328,7 +305,7 @@ class EmbraceApp < CrymbleUI::App
                     dialog.field_lids.each_with_index do |lid, i|
                         disabled = (dialog.mux_field_lid == lid) || (dialog.value_field_lid == lid)
                         state = dialog.field_selected[i] ? CrymbleUI::CheckState::Checked : CrymbleUI::CheckState::Unchecked
-                        cb = checkbox(dialog.field_names[i], state: state, id: "#{dialog.id}_cb_#{i}") {
+                        cb = checkbox(dialog.field_names[i], state: state, id: "#{dialog.id}_cb_#{lid}") {
                             dialog.field_selected[i] = !dialog.field_selected[i]
                             request_rebuild
                         }
@@ -350,147 +327,6 @@ class EmbraceApp < CrymbleUI::App
                     b_diss.enabled = dialog.can_dissociate?
 
                     button("Done", id: "#{dialog.id}_done") { dialog.close; request_rebuild }
-                end
-            end
-        end
-    end
-
-    private def build_dirbrowser_dialog(dialog : Dialogs::DirBrowser) : Nil
-        popup_bg = CrymbleUI::Theme.current.popup_background
-        window_panel(dialog.title, x: 100.0, y: 80.0, width: 700.0, height: 500.0, id: dialog.id) do
-            on_closed { dialog.close; request_rebuild }
-            register_shortcut("Escape") { dialog.close; request_rebuild }
-            # Enter is the one key a panel shortcut sees FIRST (sfml_renderer.cr: Enter/Space check
-            # panel shortcuts before the focused widget). Arrow keys are the opposite — they go to
-            # the focused widget and then to spatial focus navigation, and never arrive here — so
-            # walking the list is the MATRIX's own cursor, and Enter acts on the row under it.
-            # Registering Up/Down here looked right and fired never.
-            register_shortcut("Enter") do
-                row = -1
-                if (vm = find("#{dialog.id}_files")).is_a?(CrymbleUI::VirtualMatrix)
-                    focused = CrymbleUI::Widget.focus_manager?.try(&.focused?(vm))
-                    row = vm.cursor_rc[0] - 1 if focused # row 0 is the header
-                end
-                row >= 0 ? dialog.activate_index(row) : dialog.activate_selection
-                request_rebuild
-            end
-            vstack(spacing: 5.0, padding: 10.0) do
-                hstack(spacing: 1.0) do
-                    dialog.path.parts.each_with_index do |part, i|
-                        button(part, padding: 2.0, id: "#{dialog.id}_path_#{i}") do
-                            dialog.navigate_to_part(i + 1)
-                            request_rebuild
-                        end
-                        text("/") if i < dialog.path.parts.size - 1
-                    end
-                end
-
-                drives = dialog.drives
-                if !drives.empty?
-                    hstack(spacing: 1.0) do
-                        drives.each_with_index do |drv, i|
-                            button(drv, padding: 2.0, id: "#{dialog.id}_drv_#{i}") do
-                                dialog.path = Path[drv]
-                                dialog.update
-                                request_rebuild
-                            end
-                        end
-                    end
-                end
-
-                adapter = CrymbleUI::Widgets::DirBrowser::MatrixAdapter.new
-                adapter.items = dialog.items
-                adapter.sort_column = dialog.sort_column
-                adapter.sort_ascending = dialog.sort_ascending
-                adapter.selected_name = dialog.selected_name
-                # Re-seed the activation state from the dialog: this adapter is new this frame.
-                adapter.last_click_file = dialog.last_click_file
-                adapter.on_navigate = ->(dirname : String) {
-                    dialog.navigate(dirname)
-                    dialog.last_click_file = adapter.last_click_file # cleared by the adapter
-                    request_rebuild
-                    nil
-                }
-                # First click on a directory selects it; the second (on_navigate) enters it.
-                adapter.on_select_dir = ->(name : String) {
-                    dialog.select_dir(name)
-                    dialog.last_click_file = adapter.last_click_file
-                    request_rebuild
-                    nil
-                }
-                adapter.on_select_file = ->(name : String) {
-                    dialog.select_file(name)
-                    # Carry the selection back, or the second click starts from nil and reads as a first.
-                    dialog.last_click_file = adapter.last_click_file
-                    request_rebuild
-                    nil
-                }
-                # The second click on an already-selected file: take it and close.
-                adapter.on_accept = ->(name : String) {
-                    dialog.select_file(name)
-                    dialog.last_click_file = nil
-                    dialog.accept
-                    request_rebuild
-                    nil
-                }
-                adapter.on_sort = ->(col : Int32) {
-                    dialog.sort_by(col)
-                    request_rebuild
-                    nil
-                }
-                file_list : CrymbleUI::Widget? = nil
-                expanded do
-                    vm = widget(CrymbleUI::VirtualMatrix.new(
-                        adapter: adapter,
-                        id: "#{dialog.id}_files",
-                    ))
-                    vm.as(CrymbleUI::VirtualMatrix).show_rulers = false
-                    file_list = vm
-                end
-
-                separator
-
-                hstack(spacing: 5.0) do
-                    text("Filename:")
-                    field = text_input(dialog.filename, id: "#{dialog.id}_filename", width: 400.0,
-                        on_event: ->(val : String, ev : CrymbleUI::TextInputEvent) {
-                            dialog.filename = val if ev.change?
-                            if ev.submit?
-                                dialog.accept; request_rebuild
-                            elsif ev.cancel?
-                                dialog.close; request_rebuild
-                            end
-                            nil
-                        })
-                    # Once, on open: the dialog exists to be typed into. Guarded, or every rebuild
-                    # (one per keystroke, via on_event above) would drag focus back from wherever
-                    # the user put it.
-                    unless dialog.focused_once
-                        dialog.focused_once = true
-                        # The list when browsing, the name field when naming — see Dialogs::DirBrowser.
-                        # The widget itself, not find(): the tree is still being BUILT here, so the
-                        # matrix two containers up is not reachable by id yet.
-                        if dialog.focus_list && (list = file_list)
-                            list.request_focus
-                        else
-                            field.request_focus
-                        end
-                    end
-                end
-                hstack(spacing: 10.0) do
-                    checkbox("All files", checked: dialog.show_all, id: "#{dialog.id}_all_files") do
-                        dialog.show_all = !dialog.show_all
-                        dialog.update
-                        request_rebuild
-                    end
-                    # Takes the name from the field beside it: one text box, two uses, rather than
-                    # a second dialog on top of this one to ask for four characters.
-                    button("New folder", id: "#{dialog.id}_new_folder") do
-                        dialog.create_folder(dialog.filename)
-                        request_rebuild
-                    end
-                    button("Ok", id: "#{dialog.id}_ok") { dialog.accept; request_rebuild }
-                    button("Cancel", id: "#{dialog.id}_cancel") { dialog.close; request_rebuild }
                 end
             end
         end

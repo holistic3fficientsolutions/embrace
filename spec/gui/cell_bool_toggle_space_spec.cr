@@ -5,6 +5,7 @@ require "../../src/gui/cell"
 require "../../src/debug-helper"
 require "../../src/constants"
 require "crymble-ui/testing/test_renderer"
+require "./support/fixtures"
 
 include Persistency
 
@@ -22,34 +23,12 @@ include Persistency
 # Two independent defects reproduced below.
 
 private def make_flags_app : EmbraceApp
-  app = EmbraceApp.new
-  persistency = app.persistency
-  hash = Hash(String, FieldLID | TableLID | RecordLID).new
-  help = TableReader(Persistency::Default, Persistency::Cell).new(persistency, hash)
-  help << <<-EOT
+  Fixtures.app(<<-EOT)[0]
       Flags
       Name | Active
       Alpha | one
       Beta | two
   EOT
-  flags_lid = hash["Flags"].as(TableLID)
-  app.shapes.clear
-  ctx = persistency.context.clone
-  app.shapes << ShapeState.new("Flags", persistency, ctx, flags_lid)
-  app.request_rebuild
-  app
-end
-
-private def first_data_cell(adapter, rows, cols) : Tuple(Int32, Int32)
-  rows.each do |r|
-    cols.each do |c|
-      next if adapter.cell_get_header_info({r, c})
-      v = adapter.cell_read({r, c})
-      next if v == "" || v.is_a?(ReferenceCell)
-      return {r, c}
-    end
-  end
-  raise "no data cell found"
 end
 
 describe "Bug report #1: 'true + Space toggle + strings with spaces" do
@@ -66,8 +45,7 @@ describe "Bug report #1: 'true + Space toggle + strings with spaces" do
     renderer = CrymbleUI::Testing::TestRenderer.new(1200, 800)
     renderer.settle_rendering(app)
     adapter = app.shapes.first.matrix_adapter.not_nil!
-    rows, cols = adapter.get_scrollorder
-    r, c = first_data_cell(adapter, rows, cols)
+    r, c = Fixtures.first_data_cell(adapter)
 
     # Enter a Bool via the documented apostrophe syntax.
     adapter.cell_assign(r, c, "'true")

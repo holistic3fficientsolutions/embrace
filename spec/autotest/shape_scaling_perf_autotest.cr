@@ -195,10 +195,9 @@ end
 # The three stages the 20-row baseline could not see. All are LAZY — pulled by the first data
 # access — so a timer on ShapeState#update (the gate) misses every one of them.
 class VirtualTable(T, U)
-  # `update` is PRIVATE and reported 0 calls in the previous run, which is arithmetically impossible
-  # (Hierarchic#update reads @parent.version, and version calls update). Hooking the PUBLIC `version`
-  # alongside it is the discriminator: version fires + update doesn't ⇒ the private override is the
-  # problem; NEITHER fires ⇒ this reopen isn't reaching the type the Shapes actually use.
+  # `version` and `update` are timed separately: a version read is a sum of the table's inputs (it never re-derives
+  # the rows; it may sync the Configurator's schema), so the re-derivation cost is all in `update`, reached by the next data read. NEITHER firing
+  # means this reopen isn't reaching the type the Shapes actually use.
   def version : Int32
     timed_stage(version_ms, version_calls)
   end
@@ -230,7 +229,7 @@ class Table::Lazy::Pivot::Simple(T, U)
 end
 
 module Persistency::Generic::Basics(T)
-  # The signature must match persistency.cr:897 EXACTLY. An untyped `query` param does not override
+  # The signature must match Persistency::Generic::Basics#complex_query EXACTLY. An untyped `query` param does not override
   # it — Crystal treats it as a second, less-specific OVERLOAD, so every real call still goes to the
   # original and the probe reads a silent, plausible-looking zero. (Measured: 0 calls on both
   # fixtures, when the TablePicker alone guarantees one per shape per rebuild.)

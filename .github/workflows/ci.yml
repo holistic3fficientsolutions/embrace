@@ -55,6 +55,10 @@ jobs:
           source setup.sh
           crystal spec spec/gui/*.cr
 
+      # The GUI specs that go red when ShapeState#update's gate misses the fieldlist's version (see the script).
+      - name: Specs (GUI, -Dverify_bounds)
+        run: tools/verify-bounds-gui.sh
+
   windows:
     runs-on: windows-latest
     steps:

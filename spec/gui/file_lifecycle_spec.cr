@@ -21,7 +21,7 @@ include Persistency
 # Persistency can't be subclassed-to-fail (JSON::Serializable root class), so we intercept the
 # app's serialize step instead. A toggled failure is what hits the truncate-in-place symptom — an
 # unwritable path can't, since File.new raises BEFORE truncation and never distinguishes the bug.
-class TestApp < EmbraceApp
+private class FailingSerializeApp < EmbraceApp
   property fail_serialize = false
 
   private def serialize_document : Bytes
@@ -42,8 +42,8 @@ private def populate(persistency, table = "Sales") : Hash(String, FieldLID | Tab
   hash
 end
 
-private def make_app : TestApp
-  app = TestApp.new
+private def make_app : FailingSerializeApp
+  app = FailingSerializeApp.new
   app.shapes.clear
   hash = populate(app.persistency)
   app.shapes << ShapeState.new("Sales", app.persistency, app.persistency.context.clone, hash["Sales"].as(TableLID))
@@ -102,13 +102,14 @@ private def valid_xlsx : String
   file
 end
 
-# This file injects serialization/IO failures on purpose and asserts the RECOVERY, so embrace's
-# "file op error: ..." diagnostic fires by design. Silenced here only, so a genuine file-op failure
-# in another spec still announces itself.
-Spec.before_each { CrymbleUI::Widget.enable_warnings = false }
-Spec.after_each { CrymbleUI::Widget.enable_warnings = true }
-
 describe "file lifecycle atomicity" do
+  # This file injects serialization/IO failures on purpose and asserts the RECOVERY, so embrace's
+  # "file op error: ..." diagnostic fires by design. Silenced for THESE examples only - a top-level
+  # Spec hook would silence every example in the GUI binary - so a genuine file-op failure in
+  # another spec still announces itself.
+  before_each { CrymbleUI::Widget.enable_warnings = false }
+  after_each { CrymbleUI::Widget.enable_warnings = true }
+
   it "T1: a failed load leaves the document intact, so a later save keeps the good file" do
     app = make_app
     good = File.tempname(".embrace")
@@ -126,7 +127,7 @@ describe "file lifecycle atomicity" do
 
     # the kill chain: a save after the failed load must NOT destroy the good file
     app.save_document(good).should be_true
-    fresh = TestApp.new
+    fresh = FailingSerializeApp.new
     fresh.load_document(good).should be_true # good still loads => it still holds the real document
 
     File.delete?(good)
@@ -199,7 +200,7 @@ describe "file lifecycle atomicity" do
     fire_shortcut(app, SF::Keyboard::Key::S).should be_true # menu "Save file" ^S
 
     # the good file must still be the REAL document, not the empty split-brain the old bug wrote
-    reloaded = TestApp.new
+    reloaded = FailingSerializeApp.new
     reloaded.load_document(good).should be_true
     table_count(reloaded.persistency, reloaded.shapes.first.context).should eq(tables_before)
 
@@ -241,6 +242,17 @@ describe "file lifecycle atomicity" do
 
     File.delete?(good)
     File.delete?(barrier)
+  end
+
+  it "a save whose last step fails (the name is a folder) removes the temp it wrote" do
+    app = make_app
+    folder = File.tempname(".embrace"); Dir.mkdir(folder) # the temp is written; renaming it over a folder fails
+    app.save_document(folder).should be_false
+
+    Dir.exists?(folder).should be_true
+    File.exists?("#{folder}.tmp.#{Process.pid}").should be_false
+  ensure
+    Dir.delete(folder) if folder && Dir.exists?(folder)
   end
 
   it "an import of a header-only sheet is rejected before any mutation (precondition path)" do

@@ -101,28 +101,33 @@ class Configurator(T,U) # TODO(vtable): collapse this Configurator namespace int
     @is_selected = WeakKeyMap(Tree, Bool|SomeStruct).new
     @is_used = WeakKeyMap(Tree, Bool).new
     @dirty = true
-    # If set, update() pushes this context onto the persistency stack before
-    # reading. Keeps the Configurator's view pinned to a specific context
-    # (e.g. a Shape's context) regardless of what's on top globally — needed
-    # after do_commit when Shape's context advances but the app's default
-    # context stays behind.
-    @context : Persistency::Context? = nil
+    # The context this Configurator - and the VirtualTable it builds - reads and writes, whatever context is on top
+    # of the stack: a Shape's, so its view stays its own after a commit or a history step. Given none, the context
+    # on top at construction.
+    getter context : Persistency::Context
     def context=(ctx : Persistency::Context) : Persistency::Context
+        # The table built on it keys on `version_in(context) + version`: a re-pin must raise that sum - also onto a
+        # context of equal or lower version - or the table meets a number it has seen before, for other contents.
+        @version += Math.max(@context.version - ctx.version, 0) + 1
         @context = ctx
         @dirty = true
         ctx
     end
-    def initialize(@persistency : Persistency::Default, table : TableLID, @context : Persistency::Context? = nil)
+    def initialize(@persistency : Persistency::Default, table : TableLID, context : Persistency::Context? = nil)
+        @context = context || @persistency.context
         @block_update = true
         @tree = Tree.new(table) {update}
-        @display_name[@tree] = {"", @persistency.get_value(MetaFieldLIDs::Names, table).as(String), ""}
-        @level[@tree] = 0
-        @is_expanded[@tree] = true
-        @is_selected[@tree] = false
-        @block_update = false
-        update(@tree)
+        @persistency.with_context(@context) do
+            @display_name[@tree] = {"", @persistency.get_value(MetaFieldLIDs::Names, table).as(String), ""}
+            @level[@tree] = 0
+            @is_expanded[@tree] = true
+            @is_selected[@tree] = false
+            @block_update = false
+            update(@tree)
+        end
     end
     protected def initialize(other : Configurator(T,U), persistency : Persistency::Default)
+        @context = other.context
         @block_update = true
         @tree = Tree.new(0i64) # dummy
         @meta_version = 0
@@ -160,7 +165,9 @@ class Configurator(T,U) # TODO(vtable): collapse this Configurator namespace int
         if is_expandable?(node) && (node != @tree) # root always expanded by initialize
             @is_expanded[node] ^= true
             @version += 1
-            update(node) # needs to be done afterwards, since otherwise new tree cannot be referenced from outside (since we don't change metadata, general `update` does not help)
+            # needs to be done afterwards, since otherwise new tree cannot be referenced from outside (since we don't
+            # change metadata, general `update` does not help)
+            @persistency.with_context(@context) { update(node) }
         end
         @dirty = true
     end
@@ -262,9 +269,11 @@ class Configurator(T,U) # TODO(vtable): collapse this Configurator namespace int
     end
     # Did EVERY displayed column arrive without crossing a reference?
     #
-    # A base column's user-id path is `[field]`; every reference hop appends `[table, field]`,
-    # so lengths run 1, 3, 5 — the root table is omitted. A path longer than 1 means the column
-    # was pulled in across a reference, which makes one record paint into several rows.
+    # A base column's user-id path is `[field]`; every reference hop appends `[field1, field2]`, both
+    # FieldLIDs - table1's reference field and table2's end of that reference (its edge_to_parent) -
+    # so lengths run 1, 3, 5 and a TableLID never appears, though the type admits one. A path
+    # longer than 1 means the column was pulled in across a reference, which makes one record
+    # paint into several rows.
     #
     # CALLER CONTRACT: the VirtualTable must be current first. `user_ids` is populated by
     # *VirtualTable#update*, never by Configurator#update — so this reads whatever the last VT
@@ -279,30 +288,27 @@ class Configurator(T,U) # TODO(vtable): collapse this Configurator namespace int
         user_id_mgr.each_entry { |path, uid| return false if path.size != 1 && ids.includes?(uid) }
         true
     end
+    # Syncs first, unlike a table's version: VirtualTable#update reads this Configurator's tree shape, is_incoming,
+    # display_name and level through plain getters right after reading this version - the read is their sync. The
+    # counter itself moves only on a toggle (which syncs first). O(schema), never the rows.
     def version : Int32
         update
         @version
     end
+    class_property rebuild_count : Int64 = 0_i64 # the tree rebuilt (a spec's probe, as VirtualTable's)
     protected def update
         if !@block_update
-            if ctx = @context
-                @persistency.contexts.push(ctx)
-            end
-            begin
-                meta_version = @persistency.version + @persistency.context.version
+            @persistency.with_context(@context) do
+                meta_version = @persistency.meta_version_in(@context) # the tree reads metadata only
                 if (@meta_version != meta_version) || @dirty
                     @meta_version = meta_version # TODO(vtable): this reset may belong at the end of #update, not here — unverified
                     @dirty = false # TODO(vtable): this reset may belong at the end of #update, not here — unverified
+                    Configurator.rebuild_count += 1
                     update(@tree)
                     update_caches
                 end
-            ensure
-                @persistency.contexts.pop if @context
             end
         end
-    end
-    protected def force_update : Nil
-        @version += 1
     end
     protected def to_a # only for testing
         update
@@ -500,18 +506,20 @@ class VirtualTable(T, U) < Table::Lazy::Raw::Base(T)
         end
     end
     def []=(index : Index, value : T) : Index
-        if is_multiassign?
-            # in parallel assign mode we just first just store all the assignments
-            @multiassign.buffer[index[0]] ||= Array({Index,T}).new
-            @multiassign.buffer[index[0]] << {index, value}
-            index
-        else
-            update
-            old_row = @table_raw[index[0]].dup
-            raw_assignment(index, value) # no update inside, but patching
-            fingerprint = fingerprint_patch_and_get(old_row, @table_raw[index[0]]) # continue patching, return fresh fingerprint
-            update
-            [fingerprint_match(fingerprint).not_nil!, index[1]] # find fingerprint
+        within_own_context do
+            if is_multiassign?
+                # in parallel assign mode we just first just store all the assignments
+                @multiassign.buffer[index[0]] ||= Array({Index,T}).new
+                @multiassign.buffer[index[0]] << {index, value}
+                index
+            else
+                update
+                old_row = @table_raw[index[0]].dup
+                raw_assignment(index, value) # no update inside, but patching
+                fingerprint = fingerprint_patch_and_get(old_row, @table_raw[index[0]]) # continue patching, return fresh fingerprint
+                update
+                [fingerprint_match(fingerprint).not_nil!, index[1]] # find fingerprint
+            end
         end
     end
     def hyperplane_is_rank(norm_dimension : Int32, index : Index) : Bool # must be overridden by root tables
@@ -546,136 +554,138 @@ class VirtualTable(T, U) < Table::Lazy::Raw::Base(T)
         end
     end
     def hyperplane_add(dimension : Int32, index=Index.new(size.size, -1), **args) : Index # append hyperplane globally (with nil values); need not necessarily show up in "self" table; must be overridden by root tables
-        # `index` only selects _table_
-        # will always be appended, independent of "index" (hence no move done here)
-        update
-        col = index[1]
-        res = [-1,-1]
-        case dimension
-        when 0 # row, hence record; might set PseudoFields::ShowAll
-            col = 0 if (col < 0) || (col >= @tree.user_columns.size) # default is first user column
-            internal_col = @tree.user_columns[col]
-            node = @tree.indices.bwd(internal_col)[0]
-            table_lid = node.value.as(TableLID)
-            is_showall = was_showall = @tree.configurator.is_selected?(node[PseudoFields::ShowAll])
-            begin
-                @persistency.transaction do
-                    if (candidates = args[:candidates]?) && (clusters = args[:clusters]?)
-                        # special case, we try to make a record on a lower level, _indirectly_ creating a higher level entry in VT
-                        ri = make_sibling(index, clusters, candidates) # this is more complex...
-                        is_showall = @tree.configurator.is_selected?(node[PseudoFields::ShowAll])
-                    else # "normal" #hyperplane_add
-                        record_lid_new = @persistency.add_record(table_lid)
-                        # finally, switch on ShowAll, if needed
-                        if (@tree.tables.size > 1) && !is_showall
-                            # needed to enforce actually showing the new record
-                            @tree.configurator.toggle_select(node[PseudoFields::ShowAll])
-                            is_showall = true
-                        end
-                        # now construct a new index (to return)
-                        update
-                        record_lid_column = @tree.indices[{node, PseudoFields::RecordLID}]
-                        new_rows = @table_raw.map_with_index {|row,ri| {row[record_lid_column], ri}}.select {|record_lid,ri| record_lid==record_lid_new}
-                        assert(new_rows.size >= 1) # TODO(vtable): verify whether new_rows.size is always exactly 1
-                        ri = new_rows[0][1]
-                    end
-                    if clusters = args[:clusters]? # column => value
-                        if !clusters.empty?
-                            multiassign_begin
-                            clusters.each do |col,value|
-                                self[[ri,col]] = value
-                            end
-                            index2 = multiassign_end.not_nil!
-                            ri = index2[0]
-                        end
-                    end
-                    res = [ri,col] # default result (the new index)
-                    if is_showall && !was_showall # in this case we try to reduce again
-                        fingerprint = fingerprint_patch_and_get(@table_raw[ri])
-                        @tree.configurator.toggle_select(node[PseudoFields::ShowAll]) # disable ShowAll
-                        update # need to call manually since we're operating lowlevel
-                        if ri = fingerprint_match(fingerprint)
-                            res = [ri, col] # the better match
-                        else
-                            @tree.configurator.toggle_select(node[PseudoFields::ShowAll]) # not found, need to re-enable
-                            update
-                            # we stick with the default index
-                        end
-                    end
-                end
-            rescue ex
-                if is_showall && !was_showall # in case of exception we revert again (both in case for #make_sibling and the non-referencecell)
-                    @tree.configurator.toggle_select(node[PseudoFields::ShowAll])
-                end
-                @tree.configurator.force_update # TODO(vtable): forced here because some boundary conditions otherwise let this exception resurface later as an IndexError in referencecell.cr during Shape/Cell painting
-                # TODO(vtable): some ConditionsNotMet paths appear to leave the VirtualTable partly patched, which is why #force_update is needed
-                raise(ex)
-            end
-        when 1 # col, hence field
-            if (col < 0) || (col >= @tree.user_columns.size)
-                node = @tree.configurator.tree # we default to the first table here
-                internal_col = nil
-            else
+        within_own_context do
+            # `index` only selects _table_
+            # will always be appended, independent of "index" (hence no move done here)
+            update
+            col = index[1]
+            res = [-1,-1]
+            case dimension
+            when 0 # row, hence record; might set PseudoFields::ShowAll
+                col = 0 if (col < 0) || (col >= @tree.user_columns.size) # default is first user column
                 internal_col = @tree.user_columns[col]
                 node = @tree.indices.bwd(internal_col)[0]
+                table_lid = node.value.as(TableLID)
+                is_showall = was_showall = @tree.configurator.is_selected?(node[PseudoFields::ShowAll])
+                begin
+                    @persistency.transaction do
+                        if (candidates = args[:candidates]?) && (clusters = args[:clusters]?)
+                            # special case, we try to make a record on a lower level, _indirectly_ creating a higher level entry in VT
+                            ri = make_sibling(index, clusters, candidates) # this is more complex...
+                            is_showall = @tree.configurator.is_selected?(node[PseudoFields::ShowAll])
+                        else # "normal" #hyperplane_add
+                            record_lid_new = @persistency.add_record(table_lid)
+                            # finally, switch on ShowAll, if needed
+                            if (@tree.tables.size > 1) && !is_showall
+                                # needed to enforce actually showing the new record
+                                @tree.configurator.toggle_select(node[PseudoFields::ShowAll])
+                                is_showall = true
+                            end
+                            # now construct a new index (to return)
+                            update
+                            record_lid_column = @tree.indices[{node, PseudoFields::RecordLID}]
+                            new_rows = @table_raw.map_with_index {|row,ri| {row[record_lid_column], ri}}.select {|record_lid,ri| record_lid==record_lid_new}
+                            assert(new_rows.size >= 1) # TODO(vtable): verify whether new_rows.size is always exactly 1
+                            ri = new_rows[0][1]
+                        end
+                        if clusters = args[:clusters]? # column => value
+                            if !clusters.empty?
+                                multiassign_begin
+                                clusters.each do |col,value|
+                                    self[[ri,col]] = value
+                                end
+                                index2 = multiassign_end.not_nil!
+                                ri = index2[0]
+                            end
+                        end
+                        res = [ri,col] # default result (the new index)
+                        if is_showall && !was_showall # in this case we try to reduce again
+                            fingerprint = fingerprint_patch_and_get(@table_raw[ri])
+                            @tree.configurator.toggle_select(node[PseudoFields::ShowAll]) # disable ShowAll
+                            update # need to call manually since we're operating lowlevel
+                            if ri = fingerprint_match(fingerprint)
+                                res = [ri, col] # the better match
+                            else
+                                @tree.configurator.toggle_select(node[PseudoFields::ShowAll]) # not found, need to re-enable
+                                update
+                                # we stick with the default index
+                            end
+                        end
+                    end
+                rescue ex
+                    if is_showall && !was_showall # in case of exception we revert again (both in case for #make_sibling and the non-referencecell)
+                        @tree.configurator.toggle_select(node[PseudoFields::ShowAll])
+                    end
+                    raise(ex)
+                end
+            when 1 # col, hence field
+                if (col < 0) || (col >= @tree.user_columns.size)
+                    node = @tree.configurator.tree # we default to the first table here
+                    internal_col = nil
+                else
+                    internal_col = @tree.user_columns[col]
+                    node = @tree.indices.bwd(internal_col)[0]
+                end
+                table_lid = node.value.as(TableLID)
+                    # Storage keeps the TRUTH: an un-named field stores "" (the AddField dialog
+                    # submits ""). The "(unnamed)" placeholder is applied at READ time by
+                    # Persistency#display_name — one owner for every display surface, and rename/
+                    # table-create can't leak a differently-rendered blank.
+                    name = args[:name]? || ""
+                refers_to_field_lid = args[:refers_to_field_lid]? || nil
+                # finally, mark in Configurator
+                field_lid = @persistency.add_field(table_lid, name, refers_to_field_lid)
+                # @tree.configurator.update # done implicitly by tree hook in Configurator
+                field_node = node[field_lid] # relies on updated (internal, vs. root) `node` after the persistency call!
+                assert(!@tree.configurator.is_selected?(field_node))
+                @tree.configurator.toggle_select(field_node)
+                # now construct a new index (to return)
+                update
+                ci = @tree.indices[{node,field_lid}] # internal column
+                user_ci = @tree.user_columns.map_with_index {|el,i| {el,i}}.select {|el,i| el==ci}
+                assert(user_ci.size == 1)
+                res = [index[0],user_ci[0][1]] # we return the user column index
+            else
+                assert(false)
             end
-            table_lid = node.value.as(TableLID)
-                # Storage keeps the TRUTH: an un-named field stores "" (the AddField dialog
-                # submits ""). The "(unnamed)" placeholder is applied at READ time by
-                # Persistency#display_name — one owner for every display surface, and rename/
-                # table-create can't leak a differently-rendered blank.
-                name = args[:name]? || ""
-            refers_to_field_lid = args[:refers_to_field_lid]? || nil
-            # finally, mark in Configurator
-            field_lid = @persistency.add_field(table_lid, name, refers_to_field_lid)
-            # @tree.configurator.update # done implicitly by tree hook in Configurator
-            field_node = node[field_lid] # relies on updated (internal, vs. root) `node` after the persistency call!
-            assert(!@tree.configurator.is_selected?(field_node))
-            @tree.configurator.toggle_select(field_node)
-            # now construct a new index (to return)
-            update
-            ci = @tree.indices[{node,field_lid}] # internal column
-            user_ci = @tree.user_columns.map_with_index {|el,i| {el,i}}.select {|el,i| el==ci}
-            assert(user_ci.size == 1)
-            res = [index[0],user_ci[0][1]] # we return the user column index
-        else
-            assert(false)
+            res
         end
-        res
     end
     def hyperplane_remove(dimension : Int32, index : Index, **args)
-        # `index` only selects table and either record or field
-        update
-        internal_col = @tree.user_columns[index[1]]
-        case dimension
-        when 0 # row, hence record
-            row = index[0]
-            node = @tree.indices.bwd(internal_col)[0]
-            table_lid = node.value.as(TableLID)
-            record_lid_col = @tree.indices[{node, PseudoFields::RecordLID}]
-            record_lid = @table_raw[row][record_lid_col].as(RecordLID)
-            if args[:transform_to_names]? # special side effect requested?
-                node.each do |field_lid,child|
-                    if field_lid.is_a?(FieldLID) && @tree.configurator.is_selected?(child)
-                        col = @tree.indices[{node, field_lid}]
-                        name = @table_raw[row][col]
-                        if !name.is_a?(ReferenceCell(U))
-                            @persistency.set_value(MetaFieldLIDs::Names, field_lid, name.to_s)
+        within_own_context do
+            # `index` only selects table and either record or field
+            update
+            internal_col = @tree.user_columns[index[1]]
+            case dimension
+            when 0 # row, hence record
+                row = index[0]
+                node = @tree.indices.bwd(internal_col)[0]
+                table_lid = node.value.as(TableLID)
+                record_lid_col = @tree.indices[{node, PseudoFields::RecordLID}]
+                record_lid = @table_raw[row][record_lid_col].as(RecordLID)
+                if args[:transform_to_names]? # special side effect requested?
+                    node.each do |field_lid,child|
+                        if field_lid.is_a?(FieldLID) && @tree.configurator.is_selected?(child)
+                            col = @tree.indices[{node, field_lid}]
+                            name = @table_raw[row][col]
+                            if !name.is_a?(ReferenceCell(U))
+                                @persistency.set_value(MetaFieldLIDs::Names, field_lid, name.to_s)
+                            end
                         end
                     end
                 end
-            end
-            @persistency.remove_record(table_lid, record_lid)
-        when 1 # col, hence field
-            node, field_lid = @tree.indices.bwd(internal_col)
-            table_lid = node.value.as(TableLID)
-            if field_lid.is_a?(FieldLID)
-                @persistency.remove_field(table_lid, field_lid)
+                @persistency.remove_record(table_lid, record_lid)
+            when 1 # col, hence field
+                node, field_lid = @tree.indices.bwd(internal_col)
+                table_lid = node.value.as(TableLID)
+                if field_lid.is_a?(FieldLID)
+                    @persistency.remove_field(table_lid, field_lid)
+                else
+                    raise ConditionsNotMet.new("Cannot remove pseudo fields")
+                end
             else
-                raise ConditionsNotMet.new("Cannot remove pseudo fields")
+                assert(false)
             end
-        else
-            assert(false)
         end
     end
     def hyperplane_move(dimension : Int32, index_from : Index, index_to : Index) : Index
@@ -683,12 +693,14 @@ class VirtualTable(T, U) < Table::Lazy::Raw::Base(T)
     end
     def hyperplane_get_name(dimension : Int32, index : Index) : T
         assert(dimension == 1)
+        update
         col = @tree.user_columns[index[1]]
         tree, field_lid = @tree.indices.bwd(col)
         @tree.configurator.get_fqn(tree[field_lid])
     end
     def hyperplane_get_id(dimension : Int32, index : Index) : Int32?
         assert(dimension == 1)
+        update
         @tree.column_user_ids.bwd(@tree.user_columns[index[1]]) # the STABLE user id — the #hyperplane_get_ids currency (path-keyed, survives tree rebuilds), NOT the positional flat column
     end
     # Structural identity of a stable user column id (as returned by #hyperplane_get_id and
@@ -701,8 +713,18 @@ class VirtualTable(T, U) < Table::Lazy::Raw::Base(T)
         update
         @tree.indices.bwd(@tree.column_user_ids[col_id])[1]
     end
+    # The configurator node a stable user column id renders - the {table, field} pair
+    # column_identity deliberately drops, as the tree node that holds it; nil for an id this VT no
+    # longer shows. GUI::Ids.path_key turns it into the column's logical key.
+    def column_node?(col_id : Int32) : Tree?
+        update
+        flat = @tree.column_user_ids[col_id]? || return nil
+        table, field = @tree.indices.bwd(flat)
+        table[field]?
+    end
     def hyperplane_get_default(dimension : Int32, index : Index) : T|Nil
         assert(dimension == 1) # only columns have types
+        update
         col = @tree.user_columns[index[1]]
         _, field_lid = @tree.indices.bwd(col)
         if @referencing[field_lid]? # are we a reference?
@@ -713,6 +735,7 @@ class VirtualTable(T, U) < Table::Lazy::Raw::Base(T)
     end
     def hyperplane_get_ids(norm_dimension : Int32)
         assert(norm_dimension == 0)
+        update
         user_ids = @tree.configurator.user_ids
         assert(@tree.user_columns.size == user_ids.size)
         user_ids
@@ -723,9 +746,22 @@ class VirtualTable(T, U) < Table::Lazy::Raw::Base(T)
     protected def map_hyperplane(dimension : Int32, index : Index) : {Table::Lazy::Raw::Base(T),Int32,Index}|Nil
         nil # root table has to return nil
     end
+    # The version of its inputs - derives nothing (a stale table re-derives on its next DATA read, once, under exactly
+    # this version); reading it syncs the Configurator, as any read does. While a multiassign is open, the version of
+    # the built table: writes go to persistency DURING one (a hyperplane_remove through a pivot), so the inputs run
+    # ahead of what is served - held here at the root, which owns is_multiassign?, every derived sum inherits it.
     def version : Int32
-        update
-        @version.not_nil!
+        is_multiassign? ? @version.not_nil! : inputs_version
+    end
+
+    private def inputs_version : Int32
+        @persistency.version_in(@tree.configurator.context) + @tree.configurator.version
+    end
+    # Every read and write of this table goes through the context it is bound to - its Configurator's - not the one
+    # on top of the stack: the rebuild and each entry that reaches the persistency. Its gate (inputs_version) names
+    # the same context, so what it reads and what it keys on cannot drift apart.
+    private def within_own_context(&)
+        @persistency.with_context(@tree.configurator.context) { yield }
     end
     # called from next layer table
     # be aware: multiassignment only resolves column conflicts in single rows, not conflicts between rows!
@@ -739,74 +775,78 @@ class VirtualTable(T, U) < Table::Lazy::Raw::Base(T)
     end
     # called from next layer table
     protected def multiassign_end : Index?
-        @multiassign.count -= 1
-        res = nil
-        if !is_multiassign?
-            @tree.configurator.multiassign_end
-            all_assignments = Array({Index,T}).new
-            # reordering, checking and flushing @multiassign.buffer
-            begin
-                @multiassign.buffer.each_value do |assignments| # row by row
-                    # bring assignments in proper (topological) order
-                    sorted_nodes = DiGraph::Algorithms::TopSort.new(@graph.graph).do.map {|el| {@tree2graph.bwd?(el[:node]), [] of {Index, T}}}.to_h
-                    assignments.each do |index,value| # all assignments in current row
-                        row, col = index[0], @tree.user_columns[index[1]]
-                        table, _ = @tree.indices.bwd(col)
-                        sorted_nodes[table] << {index, value}
-                    end
-                    # check assignments in topological order
-                    # TODO(vtable): extra checking needed here because Persistency isn't ACID yet
-                    # BTW: this is all necessary, despite #fingerprint_* below! example: #hyperplane_move changes NilRecord to a defined record, along with dependent assigment
-                    row_old = @table_raw[assignments[0][0][0]].dup # first assignment, first tuple element (Index), first element (row)
-                    patch_checker = Hash(Int32,T).new
-                    sorted_nodes.each_value do |assignments|
-                        assignments.each do |index, value|
-                            all_assignments << {index, value}
+        within_own_context do
+            @multiassign.count -= 1
+            res = nil
+            if !is_multiassign?
+                @tree.configurator.multiassign_end
+                all_assignments = Array({Index,T}).new
+                # reordering, checking and flushing @multiassign.buffer
+                begin
+                    @multiassign.buffer.each do |tried_row, assignments| # row by row
+                        # bring assignments in proper (topological) order
+                        sorted_nodes = DiGraph::Algorithms::TopSort.new(@graph.graph).do.map {|el| {@tree2graph.bwd?(el[:node]), [] of {Index, T}}}.to_h
+                        assignments.each do |index,value| # all assignments in current row
                             row, col = index[0], @tree.user_columns[index[1]]
-                            if @table_raw[row][col].is_a?(NilRecord)
-                                raise ConditionsNotMet.new("Cannot assign to a non-existant record")
+                            table, _ = @tree.indices.bwd(col)
+                            sorted_nodes[table] << {index, value}
+                        end
+                        # check assignments in topological order
+                        # TODO(vtable): extra checking needed here because Persistency isn't ACID yet
+                        # BTW: this is all necessary, despite #fingerprint_* below! example: #hyperplane_move changes NilRecord to a defined record, along with dependent assigment
+                        # The row is patched in place to try the assignments out, and put back whether they pass or not:
+                        # the real assignments follow below, and a refusal must leave the table showing what is stored.
+                        row_old = @table_raw[tried_row].dup
+                        begin
+                            patch_checker = Hash(Int32,T).new
+                            sorted_nodes.each_value do |node_assignments|
+                                node_assignments.each do |index, value|
+                                    all_assignments << {index, value}
+                                    row, col = index[0], @tree.user_columns[index[1]]
+                                    if @table_raw[row][col].is_a?(NilRecord)
+                                        raise ConditionsNotMet.new("Cannot assign to a non-existant record")
+                                    end
+                                    if value.is_a?(NilRecord)
+                                        raise ConditionsNotMet.new("Cannot indirectly unreference a record")
+                                    end
+                                    raw_assignment(index, value, true) # dryrun (mostly to catch non-Int64 assignments to Ranks)
+                                    row_old2 = @table_raw[row].dup
+                                    @table_raw[row][col] = value
+                                    fingerprint_patch_and_get(row_old2, @table_raw[row], patch_checker) # we just want to patch here (and check for incompatibilities)
+                                end
                             end
-                            if value.is_a?(NilRecord)
-                                raise ConditionsNotMet.new("Cannot indirectly unreference a record")
-                            end
-                            raw_assignment(index, value, true) # dryrun (mostly to catch non-Int64 assignments to Ranks)
-                            row_old2 = @table_raw[row].dup
-                            @table_raw[row][col] = value
-                            fingerprint_patch_and_get(row_old2, @table_raw[row], patch_checker) # we just want to patch here (and check for incompatibilities)
+                        ensure
+                            @table_raw[tried_row] = row_old
                         end
                     end
-                    @table_raw[assignments[0][0][0]] = row_old # needed to restore; we're doing the real thing after passing all checks
-                end
-            rescue ex
-                raise ex # forward exception, flush buffer, but do not execute any assignment
-            else
-                # now we can execute all assignments, no more exceptions will happen
-                all_assignments.each_with_index do |index_value, i|
-                    index, value = index_value
-                    row_old = @table_raw[index[0]].dup
-                    raw_assignment(index, value)
-                    fingerprint = fingerprint_patch_and_get(row_old, @table_raw[index[0]])
-                    if i == all_assignments.size-1
-                        update
-                        row_id = fingerprint_match(fingerprint)
-                        if row_id.nil?
-                            # can e.g. get nil if user sets a reference to "(no reference)" and table is not "(Show all)"
-                            col = index[1]
-                            internal_col = @tree.user_columns[col]
-                            node = @tree.indices.bwd(internal_col)[0]
-                            if !@tree.configurator.is_selected?(node[PseudoFields::ShowAll])
-                                @tree.configurator.toggle_select(node[PseudoFields::ShowAll])
-                                update
+                    # now we can execute all assignments, no more exceptions will happen
+                    all_assignments.each_with_index do |index_value, i|
+                        index, value = index_value
+                        row_old = @table_raw[index[0]].dup
+                        raw_assignment(index, value)
+                        fingerprint = fingerprint_patch_and_get(row_old, @table_raw[index[0]])
+                        if i == all_assignments.size-1
+                            update
+                            row_id = fingerprint_match(fingerprint)
+                            if row_id.nil?
+                                # can e.g. get nil if user sets a reference to "(no reference)" and table is not "(Show all)"
+                                col = index[1]
+                                internal_col = @tree.user_columns[col]
+                                node = @tree.indices.bwd(internal_col)[0]
+                                if !@tree.configurator.is_selected?(node[PseudoFields::ShowAll])
+                                    @tree.configurator.toggle_select(node[PseudoFields::ShowAll])
+                                    update
+                                end
+                                row_id = fingerprint_match(fingerprint).not_nil! # with "(Show all)" it has to show up now
                             end
-                            row_id = fingerprint_match(fingerprint).not_nil! # with "(Show all)" it has to show up now
+                            res = [row_id, index[1]]
                         end
-                        res = [row_id, index[1]]
                     end
+                ensure
+                    @multiassign.buffer.clear # finally flush
                 end
-            ensure
-                @multiassign.buffer.clear # finally flush
+                res
             end
-            res
         end
     end
     # called from next layer table
@@ -815,31 +855,35 @@ class VirtualTable(T, U) < Table::Lazy::Raw::Base(T)
     end
     # called from ReferenceModifier
     protected def modify_reference(field_lid : FieldLID, rank : Int32, value : U)
-        record_lid = @references[field_lid].not_nil![0].bwd(rank)
-        @persistency.set_value(field_lid, record_lid, value.as(Persistency::Cell))
+        within_own_context do
+            record_lid = @references[field_lid].not_nil![0].bwd(rank)
+            @persistency.set_value(field_lid, record_lid, value.as(Persistency::Cell))
+        end
     end
     # called from ReferenceConstrainer
     protected def constrain_reference(int_col : Int32, constraints : Hash(Int32,Int32)) : {Array(Int32), Int32}
-        # `int_col` is the (already) internal column index of the reference to be constrained
-        # `constraints` maps user column indices to ranks
-        # if column is a RC, we constrain the referenced table; otherwise the original one (there is no referenced anyhow :))
-        # first, convert to @graph based constraints (and already Sets)
-        constraints = constrain_translate_constraints(constraints)
-        # second, do constraint propagation
-        constraints = constrain_all(constraints)
-        # third, navigate to needed node
-        node, field_lid = @tree.indices.bwd(int_col)
-        referenced_field_lid = @referencing[field_lid.as(FieldLID)]
-        node = @tree2graph[node].out_edges.select {|e| @graph.field_lids[e] == {field_lid.as(FieldLID), referenced_field_lid}} [0].target # need to operate on @graph (more leaves)
-        # finally, calculate fulfilling ranks
-        ranks = constraints[node]?
-        size = @references[referenced_field_lid].not_nil![1].size
-        if ranks.nil? # now we resolve shorthand `nil` for all ranks (but at the end excl. 0 for "(no reference)")
-            ranks = (1...size).to_a + [0]
-            {ranks, size-1}
-        else
-            breaking_ranks = (0...size).to_set - ranks
-            {ranks.to_a + breaking_ranks.to_a, ranks.size}
+        within_own_context do
+            # `int_col` is the (already) internal column index of the reference to be constrained
+            # `constraints` maps user column indices to ranks
+            # if column is a RC, we constrain the referenced table; otherwise the original one (there is no referenced anyhow :))
+            # first, convert to @graph based constraints (and already Sets)
+            on_graph = constrain_translate_constraints(constraints)
+            # second, do constraint propagation
+            on_graph = constrain_all(on_graph)
+            # third, navigate to needed node
+            node, field_lid = @tree.indices.bwd(int_col)
+            referenced_field_lid = @referencing[field_lid.as(FieldLID)]
+            node = @tree2graph[node].out_edges.select {|e| @graph.field_lids[e] == {field_lid.as(FieldLID), referenced_field_lid}} [0].target # need to operate on @graph (more leaves)
+            # finally, calculate fulfilling ranks
+            ranks = on_graph[node]?
+            size = @references[referenced_field_lid].not_nil![1].size
+            if ranks.nil? # now we resolve shorthand `nil` for all ranks (but at the end excl. 0 for "(no reference)")
+                ranks = (1...size).to_a + [0]
+                {ranks, size-1}
+            else
+                breaking_ranks = (0...size).to_set - ranks
+                {ranks.to_a + breaking_ranks.to_a, ranks.size}
+            end
         end
     end
     private def constrain_translate_constraints(constraints : Hash(Int32,Int32)) : Hash(DiGraph::Node,Array(Set(Int32)))
@@ -893,66 +937,72 @@ class VirtualTable(T, U) < Table::Lazy::Raw::Base(T)
             s1 & s2
         end
     end
+    # Instrumentation: how many times the table was re-derived from persistency (O(rows)); a version read must not.
+    class_property rebuild_count : Int64 = 0_i64
+
     # main update handler
     private def update
-        parent_version = @persistency.version + @persistency.context.version + @tree.configurator.version
-        if !is_multiassign? && (@version != parent_version)
-            old_user_ids = @tree.configurator.user_ids.to_a
+        within_own_context do
+            parent_version = inputs_version
+            if !is_multiassign? && (@version != parent_version)
+                VirtualTable.rebuild_count += 1
+                old_user_ids = @tree.configurator.user_ids.to_a
 
-            @tree = typeof(@tree).new(@tree.configurator)
-            @graph = typeof(@graph).new
-            @tree2graph = typeof(@tree2graph).new
-            @query = {table_lids: Array(TableLID).new, field_lids: Array(Array(FieldLID)).new, table_joins: Array({Int32,Int32}).new, where_not_nil_columns: Array(Int32).new}
-            @tree.configurator.user_id_mgr.age
-            @tree.configurator.user_ids.clear
-            @field2recordlidvalues.clear
-            # now we start to build the table
-            update_push(@tree.configurator.tree) # pushing the root table and then...
-            update_recurse(@tree.configurator.tree) # ... starting the recursion (pushing and joining all relevant tables)
-            # drop empty subtables on request
-            # (the logic is documented 4.7.2023 in booklet; see also spec/virtualtable_spec.cr)
-            # (slightly extended, since tables with only ShowAll have got separate meaning and are excluded here)
-            proper_table_nodes = @tree.tables.fwd.values.select do |tree|
-                select_count = tree.map {|_,child| @tree.configurator.is_selected?(child) ? 1 : 0}.sum
-                select_count -= 1 if @tree.configurator.is_selected?(tree[PseudoFields::ShowAll])
-                select_count > 0
-            end
-            showall_table_nodes = proper_table_nodes.select {|tree| @tree.configurator.is_selected?(tree[PseudoFields::ShowAll])}
-            if showall_table_nodes.size == 0
-                record_lid_cols = proper_table_nodes.map {|tree| @tree.indices[{tree, PseudoFields::RecordLID}]}
-                where_not_nil_anding = true
-            else
-                record_lid_cols = showall_table_nodes.map {|tree| @tree.indices[{tree, PseudoFields::RecordLID}]}
-                where_not_nil_anding = false
-            end
-            @query[:where_not_nil_columns].replace(record_lid_cols)
-
-            # finally, launch the complex query
-            @table_raw = @persistency.complex_query(@query, where_not_nil_anding).map(&.map(&.as(T)))
-
-            update_references
-            update_rework_table
-
-            # Stabilize user_ids/user_columns order: preserve the old insertion
-            # order so that fieldlist column mapping stays stable after configurator
-            # field moves. New fields are appended; removed fields are dropped.
-            if !old_user_ids.empty? && @tree.user_columns.size > 0
-                new_id_to_col = @tree.configurator.user_ids.to_a.zip(@tree.user_columns).to_h
+                @tree = typeof(@tree).new(@tree.configurator)
+                @graph = typeof(@graph).new
+                @tree2graph = typeof(@tree2graph).new
+                @query = {table_lids: Array(TableLID).new, field_lids: Array(Array(FieldLID)).new, table_joins: Array({Int32,Int32}).new, where_not_nil_columns: Array(Int32).new}
+                @tree.configurator.user_id_mgr.age
                 @tree.configurator.user_ids.clear
-                @tree.user_columns.clear
-                old_user_ids.each do |id|
-                    if col = new_id_to_col.delete(id)
+                @field2recordlidvalues.clear
+                # now we start to build the table
+                update_push(@tree.configurator.tree) # pushing the root table and then...
+                update_recurse(@tree.configurator.tree) # ... starting the recursion (pushing and joining all relevant tables)
+                # drop empty subtables on request
+                # (the logic is documented 4.7.2023 in booklet; see also spec/virtualtable_spec.cr)
+                # (slightly extended, since tables with only ShowAll have got separate meaning and are excluded here)
+                proper_table_nodes = @tree.tables.fwd.values.select do |tree|
+                    select_count = tree.map {|_,child| @tree.configurator.is_selected?(child) ? 1 : 0}.sum
+                    select_count -= 1 if @tree.configurator.is_selected?(tree[PseudoFields::ShowAll])
+                    select_count > 0
+                end
+                showall_table_nodes = proper_table_nodes.select {|tree| @tree.configurator.is_selected?(tree[PseudoFields::ShowAll])}
+                if showall_table_nodes.size == 0
+                    record_lid_cols = proper_table_nodes.map {|tree| @tree.indices[{tree, PseudoFields::RecordLID}]}
+                    where_not_nil_anding = true
+                else
+                    record_lid_cols = showall_table_nodes.map {|tree| @tree.indices[{tree, PseudoFields::RecordLID}]}
+                    where_not_nil_anding = false
+                end
+                @query[:where_not_nil_columns].replace(record_lid_cols)
+
+                # finally, launch the complex query
+                @table_raw = @persistency.complex_query(@query, where_not_nil_anding).map(&.map(&.as(T)))
+
+                update_references
+                update_rework_table
+
+                # Stabilize user_ids/user_columns order: preserve the old insertion
+                # order so that fieldlist column mapping stays stable after configurator
+                # field moves. New fields are appended; removed fields are dropped.
+                if !old_user_ids.empty? && @tree.user_columns.size > 0
+                    new_id_to_col = @tree.configurator.user_ids.to_a.zip(@tree.user_columns).to_h
+                    @tree.configurator.user_ids.clear
+                    @tree.user_columns.clear
+                    old_user_ids.each do |id|
+                        if col = new_id_to_col.delete(id)
+                            @tree.configurator.user_ids.add(id)
+                            @tree.user_columns << col
+                        end
+                    end
+                    new_id_to_col.each do |id, col|
                         @tree.configurator.user_ids.add(id)
                         @tree.user_columns << col
                     end
                 end
-                new_id_to_col.each do |id, col|
-                    @tree.configurator.user_ids.add(id)
-                    @tree.user_columns << col
-                end
-            end
 
-            @version = parent_version
+                @version = parent_version
+            end
         end
     end
     private def update_recurse(node table1 : Tree, path = Array(FieldLID|TableLID|PseudoFields).new)
@@ -960,8 +1010,10 @@ class VirtualTable(T, U) < Table::Lazy::Raw::Base(T)
             table1.each do |field1,node_field1| # all field nodes
                 node_field1.each do |field2,table2| # all table nodes, so table node.value is expanded to table n2.value
                     if @tree.configurator.is_used?(table2)
-                        path = path + [field1,field2]
-                        update_push(table2, path)
+                        # Each hop extends ITS PARENT's path only: a sibling hop's segments never enter it,
+                        # so a column's user id does not depend on which sibling references are in use.
+                        hop = path + [field1,field2]
+                        update_push(table2, hop)
 
                         # make proper edge in table graph
                         graph_nodes = {table2, table1}.map {|el| @tree2graph[el]}
@@ -974,7 +1026,7 @@ class VirtualTable(T, U) < Table::Lazy::Raw::Base(T)
                         @graph.field_lids[e] = graph_fields
 
                         update_join(table1, table2)
-                        update_recurse(table2, path) # the real recursion
+                        update_recurse(table2, hop) # the real recursion
                     end
                 end
             end

@@ -4,6 +4,8 @@ require "../src/global"
 require "../src/persistency"
 require "../src/constants"
 
+include Persistency
+
 # Names are labels, not identity — and a blank label is DISPLAYED as "(unnamed)", by exactly
 # one owner: Persistency#display_name. Storage stays truthful (a never-named or renamed-to-empty
 # field/table keeps its blank name); every display surface (shape title, configurator tree,

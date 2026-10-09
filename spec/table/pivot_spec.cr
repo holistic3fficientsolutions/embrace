@@ -14,6 +14,20 @@ end
 alias MyBaseCell = SimpleBaseCell|String|Nil|NilDeadAreaStruct # String for "(cnt)"; in addition Int64 for Indexed, if used
 
 describe Table::Lazy::Pivot do
+    # A version is a key: reading it builds nothing, and after a parent write it moves - the version of what the
+    # table would build now, never a stale one.
+    it "Pivot::Simple's version follows its parent" do
+        raw_table = Helper(BaseCell).string2table(2, <<-EOT)
+            10      Carol
+            20      Alice
+            EOT
+        table = Table::Lazy::Pivot::Simple(BaseCell, BaseCell).new(raw_table, Hash(Int32,Int32).new, [{column: 1, sort_asc?: true}], [] of {column: Int32, sort_asc?: Bool})
+        table.size # built
+        before = table.version
+        raw_table[[0, 0]] = 11i64
+        table.version.should_not eq(before)
+        table.version.should eq(raw_table.version)
+    end
     it "Pivot::Simple works, including header writing" do
         # Load    Name    Project     Quarter
         raw_table = Helper(BaseCell).string2table(4, <<-EOT)

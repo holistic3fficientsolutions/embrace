@@ -3,6 +3,7 @@ require "../../spec/spec_helper"
 require "../../src/gui/embrace"
 require "../../src/constants"
 require "crymble-ui/testing/test_renderer"
+require "./support/fixtures"
 
 include Persistency
 
@@ -18,23 +19,9 @@ include Persistency
 # filtered by in_tree?) stays FLAT and DUPLICATE-FREE — active == cached, 0 stale. Under
 # the pre-fix constructor-create path this grows a second "panel_…"/"matrix_content_…"
 # layer per rebuild (same id, live owner), which both assertions below catch.
-private def make_app(data_rows : Int32, num_shapes : Int32) : EmbraceApp
-  app = EmbraceApp.new
-  persistency = app.persistency
-  hash = Hash(String, FieldLID | TableLID | RecordLID).new
-  help = TableReader(Persistency::Default, Persistency::Cell).new(persistency, hash)
-  rows = (1..data_rows).map { |i| "a#{i} | b#{i} | c#{i}" }.join("\n")
-  help << "T\nA | B | C\n#{rows}"
-  t_lid = hash["T"].as(TableLID)
-  app.shapes.clear
-  num_shapes.times { app.shapes << ShapeState.new("T", persistency, persistency.context.clone, t_lid) }
-  app.request_rebuild
-  app
-end
-
 describe "embrace layer-registry hygiene" do
   it "keeps active layers flat and duplicate-free across rebuilds (no constructor-layer leak)" do
-    app = make_app(20, 2)
+    app = Fixtures.generated_app(rows: 20, shapes: 2)
     renderer = CrymbleUI::Testing::TestRenderer.new(1200, 800)
     renderer.settle_rendering(app)
 

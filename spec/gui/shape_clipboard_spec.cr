@@ -5,6 +5,7 @@ require "../../src/gui/cell"
 require "../../src/debug-helper"
 require "../../src/constants"
 require "crymble-ui/testing/test_renderer"
+require "./support/fixtures"
 
 include Persistency
 
@@ -19,21 +20,12 @@ private def fresh_clipboard!
 end
 
 private def make_app : EmbraceApp
-  app = EmbraceApp.new
-  persistency = app.persistency
-  hash = Hash(String, FieldLID | TableLID | RecordLID).new
-  help = TableReader(Persistency::Default, Persistency::Cell).new(persistency, hash)
-  help << <<-EOT
+  Fixtures.app(<<-EOT)[0]
       People
       Name | City
       Alice | Boston
       Bob | Munich
   EOT
-  lid = hash["People"].as(TableLID)
-  app.shapes.clear
-  app.shapes << ShapeState.new("People", persistency, persistency.context.clone, lid)
-  app.request_rebuild
-  app
 end
 
 # Menu items are addressable without opening the menu (Menu#find_by_id descends
@@ -44,18 +36,12 @@ private def click_menu(app : EmbraceApp, id : String)
 end
 
 private def make_flags_app : EmbraceApp
-  app = EmbraceApp.new
-  hash = Hash(String, FieldLID | TableLID | RecordLID).new
-  TableReader(Persistency::Default, Persistency::Cell).new(app.persistency, hash) << <<-EOT
+  Fixtures.app(<<-EOT)[0]
       Flags
       Name | Active
       Alpha | 'true
       Beta | 'false
   EOT
-  app.shapes.clear
-  app.shapes << ShapeState.new("Flags", app.persistency, app.persistency.context.clone, hash["Flags"].as(TableLID))
-  app.request_rebuild
-  app
 end
 
 private def adapter_of(app : EmbraceApp) : SimpleMatrixAdapter(Cell, BaseCell, FieldlistCell)
@@ -114,8 +100,8 @@ describe "Shape → TSV fidelity" do
     app = make_flags_app
     CrymbleUI::Testing::TestRenderer.new(1200, 800).settle_rendering(app)
 
-    click_menu(app, "shape_copy_tsv_#{app.shapes.first.id}")
-    click_menu(app, "paste_new_table")
+    click_menu(app, "mi_copy_tsv_#{app.shapes.first.id}")
+    click_menu(app, "mi_paste_new_table_#{app.shapes.first.id}")
 
     pasted = app.shapes.last.table_lid.not_nil!
     fields = app.persistency.get_field_lids(pasted)
@@ -125,9 +111,7 @@ describe "Shape → TSV fidelity" do
 
   it "flattens a reference cell to the value it points at — the relation is lost" do
     fresh_clipboard!
-    app = EmbraceApp.new
-    hash = Hash(String, FieldLID | TableLID | RecordLID).new
-    TableReader(Persistency::Default, Persistency::Cell).new(app.persistency, hash) << <<-EOT
+    app = Fixtures.app(<<-EOT, open: "People")[0]
         Cities
         City
         Boston
@@ -136,10 +120,7 @@ describe "Shape → TSV fidelity" do
         Name | City_City
         Alice | Boston
     EOT
-    app.shapes.clear
-    app.shapes << ShapeState.new("People", app.persistency, app.persistency.context.clone, hash["People"].as(TableLID))
-    app.request_rebuild
-    CrymbleUI::Testing::TestRenderer.new(1200, 800).settle_rendering(app)
+    Fixtures.renderer(app)
 
     adapter_of(app).to_tsv.should eq("1\tAlice\tBoston") # the referenced VALUE, not a rank or an object
   end
@@ -152,21 +133,49 @@ describe "Shape clipboard, driven through the menus" do
     renderer = CrymbleUI::Testing::TestRenderer.new(1200, 800)
     renderer.settle_rendering(app)
 
-    click_menu(app, "shape_copy_tsv_#{app.shapes.first.id}")
+    click_menu(app, "mi_copy_tsv_#{app.shapes.first.id}")
     CrymbleUI::Widget.clipboard.text.should eq("1\tAlice\tBoston\n2\tBob\tMunich")
   end
 
-  it "pastes into a NEW table and opens a Shape on it — with no Shape open at all" do
+  # A new table lands on the branch of the Shape it was created from. The paste used to write on
+  # the document's base context - the position as of the last load, never moved after it - so once
+  # the Shape had committed, that was a closed commit and the write forked a new branch: the table
+  # and its Shape sat on the fork, and the Shape you were in never got the table (2026-09-24).
+  it "pastes onto the branch of the Shape it came from, even after that Shape committed" do
     fresh_clipboard!
-    app = EmbraceApp.new
-    app.shapes.clear # the app-level placement exists precisely so this works
+    app = make_app
+    renderer = CrymbleUI::Testing::TestRenderer.new(1200, 800)
+    renderer.settle_rendering(app)
+    shape = app.shapes.first
+    shape.do_commit # the Shape moves on; the document's base context does not
+    app.request_rebuild
+    renderer.settle_rendering(app)
+    p = app.persistency
+    tips = p.get_ordered_commit_leaves.to_a
+    tables = ->{ p.contexts.push(shape.context); n = p.get_record_lids(Persistency::MetaFieldLIDs::TableLastTable).size; p.contexts.pop; n }
+    tables_before = tables.call
+
+    CrymbleUI::Widget.clipboard.text = "x\ty\nz\tw"
+    click_menu(app, "mi_paste_new_table_#{app.shapes.first.id}")
+
+    p.get_ordered_commit_leaves.to_a.should eq(tips)                  # no new branch
+    app.shapes.last.context.current_commit.should eq(shape.context.current_commit)
+    tables.call.should eq(tables_before + 1)                          # the Shape you were in has it
+  end
+
+  # Was "with no Shape open at all", when paste sat on the File menu. A new table is now a Shape
+  # act (it lands on that Shape's branch), and "New Shape" is always available - so the property
+  # kept is what the paste produces: a new table, and a new Shape showing exactly the clipboard.
+  it "pastes into a NEW table and opens a Shape showing exactly the clipboard" do
+    fresh_clipboard!
+    app = make_app
     CrymbleUI::Widget.clipboard.text = "x\ty\nz\tw"
     renderer = CrymbleUI::Testing::TestRenderer.new(1200, 800)
     renderer.settle_rendering(app)
 
-    click_menu(app, "paste_new_table")
-    app.shapes.size.should eq(1)
-    app.shapes.first.matrix_adapter.not_nil!.to_tsv.should eq("1\tx\ty\n2\tz\tw")
+    click_menu(app, "mi_paste_new_table_#{app.shapes.first.id}")
+    app.shapes.size.should eq(2)
+    app.shapes.last.matrix_adapter.not_nil!.to_tsv.should eq("1\tx\ty\n2\tz\tw")
   end
 
   it "round-trips a Shape through copy and paste" do
@@ -175,8 +184,8 @@ describe "Shape clipboard, driven through the menus" do
     renderer = CrymbleUI::Testing::TestRenderer.new(1200, 800)
     renderer.settle_rendering(app)
 
-    click_menu(app, "shape_copy_tsv_#{app.shapes.first.id}")
-    click_menu(app, "paste_new_table")
+    click_menu(app, "mi_copy_tsv_#{app.shapes.first.id}")
+    click_menu(app, "mi_paste_new_table_#{app.shapes.first.id}")
     app.shapes.size.should eq(2)
     # The copied Rank column comes back as ordinary data, so the new Shape's own
     # Rank sits in front of it — a known, recorded consequence of copying the whole
@@ -192,7 +201,7 @@ describe "Shape clipboard, driven through the menus" do
     before_tables = app.persistency.get_record_lids(Persistency::MetaFieldLIDs::TableLastTable).size
     before_depth = app.persistency.contexts.size
 
-    click_menu(app, "paste_new_table")
+    click_menu(app, "mi_paste_new_table_#{app.shapes.first.id}")
     app.shapes.size.should eq(1) # nothing added
     app.persistency.get_record_lids(Persistency::MetaFieldLIDs::TableLastTable).size.should eq(before_tables)
     app.persistency.contexts.size.should eq(before_depth) # and no leaked context frame
@@ -200,15 +209,14 @@ describe "Shape clipboard, driven through the menus" do
 
   it "survives a cell holding a tab, a newline and a quote" do
     fresh_clipboard!
-    app = EmbraceApp.new
-    app.shapes.clear
+    app = make_app
     hostile = %(a\tb\nc"d)
     CrymbleUI::Widget.clipboard.text = TSV.encode([[hostile, "plain"]])
     renderer = CrymbleUI::Testing::TestRenderer.new(1200, 800)
     renderer.settle_rendering(app)
 
-    click_menu(app, "paste_new_table")
-    table_lid = app.shapes.first.table_lid.not_nil!
+    click_menu(app, "mi_paste_new_table_#{app.shapes.first.id}")
+    table_lid = app.shapes.last.table_lid.not_nil!
     fields = app.persistency.get_field_lids(table_lid)
     record = app.persistency.get_record_lids(table_lid).first
     app.persistency.get_value(fields[0], record).should eq(hostile) # ONE cell, not three

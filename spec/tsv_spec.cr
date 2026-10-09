@@ -103,6 +103,29 @@ describe TSV do
         end
     end
 
+    # One spreadsheet cell on the clipboard, as the value it stands for. Mutation: drop the round trip
+    # (take the decoded field) - the tolerant decoder's readings of foreign text come back as values.
+    describe ".single_field" do
+        it "reads one cell encoded as the encoder writes it, a trailing line break allowed" do
+            TSV.single_field(%("a\nb")).should eq("a\nb")
+            TSV.single_field(%("a\nb"\n)).should eq("a\nb")
+            TSV.single_field(%("a\nb"\r\n)).should eq("a\nb")
+            TSV.single_field(%("say ""hi""")).should eq(%(say "hi"))
+            TSV.single_field("plain").should eq("plain")
+            TSV.single_field("\n").should eq("") # an empty cell, terminated
+        end
+
+        it "reads nothing from text the encoder would not write for one cell" do
+            TSV.single_field("").should be_nil        # no cell at all
+            TSV.single_field(%("")).should be_nil      # encode writes an empty value unquoted
+            TSV.single_field("a\tb").should be_nil     # two cells
+            TSV.single_field("a\nb").should be_nil     # two rows
+            TSV.single_field(%("Hi" she said)).should be_nil
+            TSV.single_field(%("hello")).should be_nil # quotes encode would not add
+            TSV.single_field(%(5" pipe)).should be_nil
+        end
+    end
+
     describe "round trip" do
         it "survives a payload holding every special character at once" do
             rows = [[%(tab\there), %(nl\nhere), %(quote"here), "plain"], ["", "x", "y", "z"]]

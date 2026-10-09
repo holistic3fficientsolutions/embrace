@@ -15,6 +15,7 @@ require "./theme_colors" # registers embrace's app-owned Theme color tokens at l
 require "./tablefieldpicker"
 require "./matrix"
 require "./vhtree"
+require "./ids"
 require "./fieldlist"
 require "./cell"
 
@@ -32,26 +33,7 @@ class VHTreeDragData < CrymbleUI::DragData
     def display_text : String?; @adapter.get_display_texts[1]?; end
 end
 
-# === VHTree Adapter ===
-
-module Interface::GUI::VHTreeAdapter
-    abstract def each(&block : Interface::GUI::VHTreeAdapter ->)
-    abstract def get_reference : Interface::GUI::VHTreeAdapter? # odd level node references odd-2 level node
-    abstract def get_display_texts : Array(String)
-    abstract def is_selected? : Bool | SomeStruct
-    abstract def is_selectable? : Bool
-    abstract def is_expandable? : Bool
-    abstract def toggle_select : Nil
-    abstract def toggle_expand : Nil
-    abstract def drag : Bool # true, if draggable
-    abstract def is_moveable?(from : Interface::GUI::VHTreeAdapter) : Bool
-    abstract def move(from : Interface::GUI::VHTreeAdapter) : Nil
-    abstract def node : Table::VirtualTable::Tree
-    abstract def is_table? : Bool
-    abstract def is_pseudo_field? : Bool
-    abstract def field_lid : FieldLID?
-    abstract def table_lid : TableLID?
-end
+# === VHTree Adapter === (the interface is Interface::GUI::VHTreeAdapter, gui/vhtree.cr)
 
 class SimpleVHTreeAdapter
     include Interface::GUI::VHTreeAdapter
@@ -61,6 +43,16 @@ class SimpleVHTreeAdapter
 
     def initialize(@configurator, @context : Persistency::Context, node : Table::VirtualTable::Tree? = nil)
         @node = node || @configurator.tree
+    end
+
+    def key : String
+        GUI::Ids.path_key(@node)
+    end
+
+    def inward_via : FieldLID?
+        return nil unless is_table? && (parent = @node.parent) && parent.parent
+        edge = @node.edge_to_parent
+        edge.as?(FieldLID) unless @configurator.is_incoming[@node]
     end
 
     def each(&block : Interface::GUI::VHTreeAdapter ->)
@@ -199,6 +191,11 @@ class SimpleMatrixAdapter(T, U, V)
     # Fired after every write, with whether it was STRUCTURAL (announce_write's answer): the app
     # rebuilds either way, and lets input queued behind a per-cell write carry on meanwhile.
     property on_data_changed : Proc(Bool, Nil)?
+    # Called on every change typed, deleted or pasted into a cell - a text cell's editor (before anything is
+    # written: the value commits later) or a reference cell's list filter (which changes no value; a pick
+    # does); a receiver may ignore every call after the first. Called with the painted cell (a merge's
+    # top-left).
+    property on_cell_edit : Proc(Int32, Int32, Nil)?
     property virtual_matrix : CrymbleUI::VirtualMatrix? = nil
 
     # Change animation state
@@ -225,23 +222,13 @@ class SimpleMatrixAdapter(T, U, V)
         invalidate_all!
     end
 
-    # Push shape context for all persistency reads/writes.
-    # Without this, @matrix_rc reads from the base context which doesn't
-    # see commits created by the shape.
-    #
-    # The `ensure` is load-bearing: a raise inside the block used to leave the
-    # ContextStack one frame deeper for the rest of the session, and the write paths
-    # (cell_assign, cell_move) raise ConditionsNotMet by design. It is safe on every
-    # call site because the pop is an identity assignment — ContextStack#push stores
-    # the object itself and nothing writes ContextStack#top=, so restoring on the
-    # raise path cannot adopt a foreign context.
+    # The Shape's context for all persistency reads/writes - without it, @matrix_rc reads the base context,
+    # which does not see the Shape's commits. Persistency#with_context takes it off the stack on every path, a
+    # raise included: the write paths (cell_assign, cell_move) raise ConditionsNotMet by design.
     private def with_shape_context(&)
         if shape = @shape
-            @persistency.contexts.push(shape.context)
-            begin
+            @persistency.with_context(shape.context) do
                 yield
-            ensure
-                shape.context = @persistency.contexts.pop
             end
         else
             yield
@@ -329,7 +316,7 @@ class SimpleMatrixAdapter(T, U, V)
             # reference cells no longer pays O(visible_cells * referenced_table_size) every rebuild.
             # bg (if set) tints the collapsed cell via background_color; the picked item's rank rides
             # reconcile, so a pick after a rebuild-while-open still assigns the right reference.
-            CrymbleUI::ComboBox.new(
+            box = CrymbleUI::ComboBox.new(
                 selected_text: value.value.to_s,
                 background_color: bg,
                 id: "rc_#{row}_#{col}",
@@ -350,6 +337,9 @@ class SimpleMatrixAdapter(T, U, V)
             ) do |rank, _val|
                 cell_assign_reference(row, col, rank)
             end
+            # Typing into its list counts as editing this cell, as typing into a text cell's editor does.
+            box.on_filter = ->(_filter : String) { @on_cell_edit.try &.call(row, col); nil }
+            box
         when Bool
             # Bool cells are checkboxes (as in the pre-crymbleui ImGui build):
             # the box visualises the value and Space / double-click toggle it.
@@ -375,6 +365,8 @@ class SimpleMatrixAdapter(T, U, V)
             # Attached after construction via the setter, so the four-way construction below
             # does not double.
             fit_on_edit = ->(v : String, ev : CrymbleUI::TextInputEvent) {
+                # An edit of this cell began: its own branch, on a change only (Escape's Cancel is none).
+                @on_cell_edit.try &.call(row, col) if ev.change?
                 # Cancel as well as Change: Escape abandons the typed value and restores the one
                 # the cell had on focus, and `notify_cancel` fires AFTER that restore — so `v` is
                 # already the value the cell is going back to. Without this the line kept the size
@@ -400,7 +392,11 @@ class SimpleMatrixAdapter(T, U, V)
                 CrymbleUI::TextInput.new(value: cell_text, mode: CrymbleUI::TextInputMode::QuickEntry, text_color: text_color, multiline: ml)
             else
                 CrymbleUI::TextInput.new(value: cell_text, mode: CrymbleUI::TextInputMode::QuickEntry, multiline: ml)
-            end.tap { |ti| ti.on_event = fit_on_edit }
+            end.tap do |ti|
+                ti.on_event = fit_on_edit
+                # One spreadsheet cell on the clipboard pastes as its value, not its TSV quoting.
+                ti.paste_transform = ->TSV.single_field(String)
+            end
         end
     end
 
@@ -572,13 +568,11 @@ class SimpleMatrixAdapter(T, U, V)
         if shape = @shape
             reset_write_signal
             before = may_announce_per_cell?(shape, {row, col}) ? capture_structure : nil
-            @persistency.contexts.push(shape.context)
-            begin
-                result = cell_assign({row, col}, converted[0])
+            result = @persistency.with_context(shape.context) do
+                cell_assign({row, col}, converted[0])
             rescue ConditionsNotMet
-                result = {row, col}
+                {row, col}
             end
-            shape.context = @persistency.contexts.pop
             CrymbleUI::InputLog.record_write(row, col, value) if CrymbleUI::InputLog.enabled?
             structural = announce_write(shape, {row, col}, result, before)
             @on_data_changed.try &.call(structural)
@@ -598,19 +592,17 @@ class SimpleMatrixAdapter(T, U, V)
         if shape = @shape
             reset_write_signal
             before = may_announce_per_cell?(shape, {row, col}) ? capture_structure : nil
-            @persistency.contexts.push(shape.context)
-            begin
+            result = @persistency.with_context(shape.context) do
                 current = @matrix_rc[{row, col}.to_a]
                 if current.is_a?(ReferenceCell)
                     current.rank = rank
-                    result = cell_assign({row, col}, current)
+                    cell_assign({row, col}, current)
                 else
-                    result = {row, col}
+                    {row, col}
                 end
             rescue ConditionsNotMet
-                result = {row, col}
+                {row, col}
             end
-            shape.context = @persistency.contexts.pop
             structural = announce_write(shape, {row, col}, result, before)
             @virtual_matrix.try &.set_cursor(result[0], result[1])
             @on_data_changed.try &.call(structural)
@@ -1028,6 +1020,23 @@ class ShapeState
         invalidate_filter
     end
 
+    # What a pending cell cut was made against: the pivot the grid shows, HELD and compared with same? (a
+    # filter change builds a new one without moving any version - a table switch moves both - and an object_id
+    # could be reused once the old one is collected, so holding it keeps a replaced pivot alive until the cut
+    # is checked), and its version read in this Shape's context (edits, moves, perspective changes, history
+    # steps and commits move it).
+    record CutStamp, pivot : Table::Lazy::Pivot::Hierarchic(Cell, BaseCell, FieldlistCell), version : Int32 do
+        def unchanged_from?(other : CutStamp) : Bool
+            pivot.same?(other.pivot) && version == other.version
+        end
+    end
+
+    # The stamp a cut made now carries; nil while the Shape shows no grid.
+    def cut_stamp : CutStamp?
+        rc = @matrix_userdata_rc || return nil
+        @persistency.with_context(@context) { CutStamp.new(rc, rc.version) }
+    end
+
     protected def invalidate_filter : Nil
         # Filter changed: rebuild just the pivot (new Partitioned view chain)
         # and swap it into the existing matrix_adapter — keeping the adapter
@@ -1048,6 +1057,56 @@ class ShapeState
     getter vhtree_adapter : SimpleVHTreeAdapter? = nil
     getter matrix_adapter : SimpleMatrixAdapter(Cell, BaseCell, FieldlistCell)? = nil
     getter fieldlist_adapter : FieldlistAdapter? = nil
+
+    # The Shape's VirtualTable as what it is (unfiltered_vt is typed as a plain table for the pivot).
+    private def typed_vt : Table::VirtualTable::VirtualTable(Cell, BaseCell)
+        @unfiltered_vt.not_nil!.as(Table::VirtualTable::VirtualTable(Cell, BaseCell))
+    end
+
+    # The logical key of fieldlist row `ri` - the configurator node of the column it arranges, as
+    # GUI::Ids.path_key. Once a row has been read (the read brings the fieldlist up to date, dropping
+    # rows whose column is gone) every row has a column, so a missing one is a bug and RAISES.
+    def field_key(ri : Int32) : String
+        fieldlist = @fieldlist || raise "Shape '#{@title}' has no field list"
+        vt = typed_vt
+        col_id = fieldlist.column_id(ri)
+        node = vt.column_node?(col_id) || raise "field list row #{ri} (column id #{col_id}) has no column"
+        GUI::Ids.path_key(node)
+    end
+
+    # The logical key of grid cell {r, c}'s column (GUI::Ids.path_key); nil on a dead cell. A READ, run
+    # in this Shape's context with Persistency#with_context, which discards the popped context -
+    # never copy that into a write path, where the context must be written back.
+    def cell_key(r : Int32, c : Int32) : String?
+        rc = @matrix_userdata_rc || return nil
+        vt = typed_vt
+        @persistency.with_context(@context) do
+            col_id = rc.hyperplane_get_id(1, [r, c]) || return nil
+            vt.column_node?(col_id).try { |node| GUI::Ids.path_key(node) }
+        end
+    end
+
+    # The value grid cell {r, c} holds, read from the pivot directly - never through the matrix
+    # adapter's cell_read, which records what it serves and arms change highlights. A read (see cell_key).
+    def cell_value(r : Int32, c : Int32) : Cell
+        rc = @matrix_userdata_rc || raise "Shape '#{@title}' shows no grid"
+        @persistency.with_context(@context) { rc[[r, c]] }
+    end
+
+    # The grid shows one record per row: Rank is the only row header (stored level 0), nothing is a
+    # column header, and every other shown field is an aggregate.
+    def detail_layout? : Bool
+        fieldlist = @fieldlist || return false
+        (0...fieldlist.size[0]).all? do |ri|
+            klass = fieldlist[[ri, Table::Lazy::Fieldlist::ColumnIndices::Class.value]]
+            level = fieldlist[[ri, Table::Lazy::Fieldlist::ColumnIndices::Level.value]]
+            case klass
+            when Table::Lazy::Pivot::Classes::Row.value    then field_key(ri) == "Rank" && level == 0
+            when Table::Lazy::Pivot::Classes::Column.value then false
+            else                                               true
+            end
+        end
+    end
     getter fieldlist_data : Table::Lazy::Fieldlist(FieldlistCell, Cell)? = nil
     def configurator_ref : Table::VirtualTable::Configurator(Cell, BaseCell)?
         @configurator
@@ -1229,8 +1288,7 @@ class ShapeState
         rank_filter_column = 0
         existing_idx = @filter_state.index { |cf| cf.column_index == rank_filter_column }
         if @diff_show_changed_only && (changed_records = @diff_changed_records)
-            @persistency.contexts.push(@context)
-            begin
+            @persistency.with_context(@context) do
                 all_records = @persistency.get_record_lids(table_lid)
                 ranks = Set(Cell).new
                 all_records.each_with_index do |rec, idx|
@@ -1241,8 +1299,6 @@ class ShapeState
                 else
                     @filter_state << Table::Lazy::Filter::ColumnFilter.new(rank_filter_column, ranks)
                 end
-            ensure
-                @persistency.contexts.pop
             end
         else
             @filter_state.delete_at(existing_idx) if existing_idx
@@ -1273,72 +1329,55 @@ class ShapeState
         # rc[[r,c]], and hyperplane_get_name are all lazy and context-dependent:
         # reading them without the Shape's context on the stack returns stale /
         # empty results (exactly how the render path fails in SimpleMatrixAdapter
-        # without the with_shape_context guard). Push once, pop at the end.
-        @persistency.contexts.push(@context)
-        begin
-        row_count = rc.size[0]
-        col_count = rc.size[1]
+        # without the with_shape_context guard). So the whole walk runs in the Shape's context.
+        @persistency.with_context(@context) do
+            row_count = rc.size[0]
+            col_count = rc.size[1]
 
-        # Fields and open records are resolved under the OPEN context — fields
-        # may not yet exist at the parent commit (e.g. a freshly-loaded demo
-        # writes all fields into commit 1, leaving commit 0 / root empty).
-        # Record existence is queried at both contexts independently: records
-        # at parent drive the rank map + deleted-set, records at open drive
-        # the walk and the lookup into open_records.
-        @persistency.contexts.push(@context)
-        begin
+            # Fields and open records are resolved under the OPEN context — fields
+            # may not yet exist at the parent commit (e.g. a freshly-loaded demo
+            # writes all fields into commit 1, leaving commit 0 / root empty).
+            # Record existence is queried at both contexts independently: records
+            # at parent drive the rank map + deleted-set, records at open drive
+            # the walk and the lookup into open_records.
             open_records = @persistency.get_record_lids(table_lid).dup
             open_field_lids = @persistency.get_field_lids(table_lid).dup
-        ensure
-            @persistency.contexts.pop
-        end
+            parent_records = @persistency.with_context(parent_ctx) { @persistency.get_record_lids(table_lid).dup }
+            parent_rank_map = Hash(RecordLID, Int32).new
+            parent_records.each_with_index { |r, i| parent_rank_map[r] = i + 1 }
+            parent_record_set = parent_records.to_set
 
-        @persistency.contexts.push(parent_ctx)
-        begin
-            parent_records = @persistency.get_record_lids(table_lid).dup
-        ensure
-            @persistency.contexts.pop
-        end
-        parent_rank_map = Hash(RecordLID, Int32).new
-        parent_records.each_with_index { |r, i| parent_rank_map[r] = i + 1 }
-        parent_record_set = parent_records.to_set
-
-        # Deleted records: in parent, not in open. Read their last-known field
-        # values under parent context so the rendering layer has everything it
-        # needs without re-querying.
-        open_record_set = open_records.to_set
-        deleted = [] of {RecordLID, Hash(FieldLID, Cell)}
-        @persistency.contexts.push(parent_ctx)
-        begin
-            # For deleted-record field values, walk the fields that existed at
-            # parent. If parent's field list is empty (e.g. root commit before
-            # anything was defined), fall back to open's — those are the fields
-            # the diff-Shape renders in its matrix anyway.
-            parent_fields_for_deleted = @persistency.get_field_lids(table_lid)
-            parent_fields_for_deleted = open_field_lids if parent_fields_for_deleted.empty?
-            parent_records.each do |r|
-                next if open_record_set.includes?(r)
-                vals = Hash(FieldLID, Cell).new
-                parent_fields_for_deleted.each do |f|
-                    vals[f] = @persistency.get_value(f, r)
+            # Deleted records: in parent, not in open. Read their last-known field
+            # values under parent context so the rendering layer has everything it
+            # needs without re-querying.
+            open_record_set = open_records.to_set
+            deleted = [] of {RecordLID, Hash(FieldLID, Cell)}
+            @persistency.with_context(parent_ctx) do
+                # For deleted-record field values, walk the fields that existed at
+                # parent. If parent's field list is empty (e.g. root commit before
+                # anything was defined), fall back to open's — those are the fields
+                # the diff-Shape renders in its matrix anyway.
+                parent_fields_for_deleted = @persistency.get_field_lids(table_lid)
+                parent_fields_for_deleted = open_field_lids if parent_fields_for_deleted.empty?
+                parent_records.each do |r|
+                    next if open_record_set.includes?(r)
+                    vals = Hash(FieldLID, Cell).new
+                    parent_fields_for_deleted.each do |f|
+                        vals[f] = @persistency.get_value(f, r)
+                    end
+                    deleted << {r, vals}
                 end
-                deleted << {r, vals}
             end
-        ensure
-            @persistency.contexts.pop
-        end
 
-        # Column → FieldLID map + detection of the Rank pseudo-column.
-        # Built once; used as O(1) lookup during the cell walk. Resolved STRUCTURALLY: the
-        # column's flat id (hyperplane_get_id) → VirtualTable#column_identity. Never by name —
-        # names are labels, not identity (two fields may share a name; a user field may be
-        # named "Rank"). O(F): one id resolution per column.
-        col_to_field = Hash(Int32, FieldLID).new
-        rank_col : Int32? = nil
-        if row_count >= 2
-            vt = @unfiltered_vt.not_nil!.as(Table::VirtualTable::VirtualTable(Cell, BaseCell))
-            @persistency.contexts.push(@context)
-            begin
+            # Column → FieldLID map + detection of the Rank pseudo-column.
+            # Built once; used as O(1) lookup during the cell walk. Resolved STRUCTURALLY: the
+            # column's flat id (hyperplane_get_id) → VirtualTable#column_identity. Never by name —
+            # names are labels, not identity (two fields may share a name; a user field may be
+            # named "Rank"). O(F): one id resolution per column.
+            col_to_field = Hash(Int32, FieldLID).new
+            rank_col : Int32? = nil
+            if row_count >= 2
+                vt = typed_vt
                 col_count.times do |col|
                     next unless col_id = rc.hyperplane_get_id(1, [1, col]) # nil: dead cell
                     case identity = vt.column_identity(col_id)
@@ -1348,82 +1387,67 @@ class ShapeState
                         col_to_field[col] = identity
                     end # other pseudo columns stay unannotated (safer than guessing)
                 end
-            ensure
-                @persistency.contexts.pop
             end
-        end
 
-        changed_cells = Set({Int32, Int32}).new
-        changed_records = Set(RecordLID).new
-        parent_values = Hash({RecordLID, FieldLID}, Cell).new
+            changed_cells = Set({Int32, Int32}).new
+            changed_records = Set(RecordLID).new
+            parent_values = Hash({RecordLID, FieldLID}, Cell).new
 
-        # Walk the open pivot. In the normalized detail view
-        # (fieldlist_normalize! sets Rank=Row, everything else Aggregate),
-        # each row corresponds to one rank value. There is no dedicated
-        # column-header row — the Rank column carries {true, _} in
-        # get_header_info (it's a row-label) while data cols carry nil.
-        # Use the rank column's VALUE as the lookup into open_records
-        # (rank 1 ⇒ open_records[0], etc.) rather than row-index-minus-one;
-        # that's robust to whether a column-header row is synthesized.
-        probe_col = col_to_field.keys.first? || 0
-        (0...row_count).each do |row|
-            # Skip genuine column-header rows (those where a non-rank cell
-            # reports header-info truthy). Data rows report nil for those.
-            next if rc.get_header_info([row, probe_col])
-            next unless rc_col = rank_col
-            rank_raw = rc[[row, rc_col]]
-            rank_i : Int32 = case rank_raw
-                when Int32 then rank_raw - 1
-                when Int64 then (rank_raw - 1).to_i32
-                else next
-                end
-            next if rank_i < 0 || rank_i >= open_records.size
-            record_lid = open_records[rank_i].as(RecordLID)
-            parent_has_record = parent_record_set.includes?(record_lid)
-
-            (0...col_count).each do |col|
-                if col == rank_col
-                    value_open = (rank_i + 1).to_i64
-                    value_parent = parent_rank_map[record_lid]?.try &.to_i64
-                    if value_open != value_parent
-                        changed_cells.add({row, col})
-                        changed_records.add(record_lid)
+            # Walk the open pivot. In the normalized detail view
+            # (fieldlist_normalize! sets Rank=Row, everything else Aggregate),
+            # each row corresponds to one rank value. There is no dedicated
+            # column-header row — the Rank column carries {true, _} in
+            # get_header_info (it's a row-label) while data cols carry nil.
+            # Use the rank column's VALUE as the lookup into open_records
+            # (rank 1 ⇒ open_records[0], etc.) rather than row-index-minus-one;
+            # that's robust to whether a column-header row is synthesized.
+            probe_col = col_to_field.keys.first? || 0
+            (0...row_count).each do |row|
+                # Skip genuine column-header rows (those where a non-rank cell
+                # reports header-info truthy). Data rows report nil for those.
+                next if rc.get_header_info([row, probe_col])
+                next unless rc_col = rank_col
+                rank_raw = rc[[row, rc_col]]
+                rank_i : Int32 = case rank_raw
+                    when Int32 then rank_raw - 1
+                    when Int64 then (rank_raw - 1).to_i32
+                    else next
                     end
-                elsif field_lid = col_to_field[col]?
-                    @persistency.contexts.push(@context)
-                    value_open = begin
-                        @persistency.get_value(field_lid, record_lid)
-                    ensure
-                        @persistency.contexts.pop
-                    end
-                    if parent_has_record
-                        @persistency.contexts.push(parent_ctx)
-                        value_parent = begin
-                            @persistency.get_value(field_lid, record_lid)
-                        ensure
-                            @persistency.contexts.pop
+                next if rank_i < 0 || rank_i >= open_records.size
+                record_lid = open_records[rank_i].as(RecordLID)
+                parent_has_record = parent_record_set.includes?(record_lid)
+
+                (0...col_count).each do |col|
+                    if col == rank_col
+                        value_open = (rank_i + 1).to_i64
+                        value_parent = parent_rank_map[record_lid]?.try &.to_i64
+                        if value_open != value_parent
+                            changed_cells.add({row, col})
+                            changed_records.add(record_lid)
                         end
-                        parent_values[{record_lid, field_lid}] = value_parent
-                    else
-                        value_parent = nil
+                    elsif field_lid = col_to_field[col]?
+                        value_open = @persistency.get_value(field_lid, record_lid)
+                        if parent_has_record
+                            value_parent = @persistency.with_context(parent_ctx) { @persistency.get_value(field_lid, record_lid) }
+                            parent_values[{record_lid, field_lid}] = value_parent
+                        else
+                            value_parent = nil
+                        end
+                        if value_open != value_parent
+                            changed_cells.add({row, col})
+                            changed_records.add(record_lid)
+                        end
                     end
-                    if value_open != value_parent
-                        changed_cells.add({row, col})
-                        changed_records.add(record_lid)
-                    end
+                    # Columns we can't map to a FieldLID (e.g. rank_col was nil;
+                    # unknown aggregate columns) are left unannotated — safer than
+                    # marking them changed by accident.
                 end
-                # Columns we can't map to a FieldLID (e.g. rank_col was nil;
-                # unknown aggregate columns) are left unannotated — safer than
-                # marking them changed by accident.
             end
-        end
 
-        @diff_changed_cells = changed_cells
-        @diff_changed_records = changed_records
-        @diff_deleted_records = deleted
-        @diff_parent_values = parent_values
-        ensure
-            @persistency.contexts.pop
+            @diff_changed_cells = changed_cells
+            @diff_changed_records = changed_records
+            @diff_deleted_records = deleted
+            @diff_parent_values = parent_values
         end
     end
 
@@ -1443,6 +1467,15 @@ class ShapeState
 
     def commit_leaf_rank : Int32
         @commit_leaf_rank
+    end
+
+    # This Shape's position moved to its branch's TIP: where a Shape opened from this one starts
+    # (New Shape), whatever past commit this one is looking at. update() fills @commit_path on
+    # construction, so every live Shape has a tip.
+    def branch_tip_context : Context
+        context = @context.clone
+        context.current_commit = @commit_path.last
+        context
     end
 
     def branch_names : Array(String)
@@ -1488,10 +1521,8 @@ class ShapeState
 
     def current_commit_index : Int32
         return 0 if @commit_path.empty?
-        @persistency.contexts.push(@context)
-        idx = @commit_path.index(@persistency.context.current_commit) || 0
-        @persistency.contexts.pop
-        idx
+        # On the path by construction (update snaps it there): a miss is a broken invariant, not "commit 1"
+        @commit_path.index!(@persistency.with_context(@context) { @persistency.context.current_commit })
     end
 
     def is_last_commit? : Bool
@@ -1499,23 +1530,20 @@ class ShapeState
     end
 
     def navigate_history(delta : Int32) : Nil
-        @persistency.contexts.push(@context)
-        commit_index = @commit_path.index!(@persistency.context.current_commit)
-        new_index = (commit_index + delta).clamp(0, @commit_path.size - 1)
-        if new_index != commit_index
+        @persistency.with_context(@context) do
+            commit_index = @commit_path.index!(@persistency.context.current_commit)
+            new_index = (commit_index + delta).clamp(0, @commit_path.size - 1)
+            return if new_index == commit_index
             @persistency.context.current_commit = @commit_path[new_index]
-            @context = @persistency.contexts.pop
-            update(true)
-        else
-            @context = @persistency.contexts.pop
         end
+        update(true)
     end
 
     def select_branch(index : Int32) : Nil
-        @persistency.contexts.push(@context)
-        @persistency.context.current_commit = @commit_leaves[index]
-        @commit_leaf_rank = index
-        @context = @persistency.contexts.pop
+        @persistency.with_context(@context) do
+            @persistency.context.current_commit = @commit_leaves[index]
+            @commit_leaf_rank = index
+        end
         update(true)
     end
 
@@ -1523,14 +1551,14 @@ class ShapeState
     # tables are floated to the new open commit (selective commit) — only the
     # checked tables' writes land in the commit being closed.
     def do_commit(defer_tables : Set(TableLID) = Set(TableLID).new) : Nil
-        @persistency.contexts.push(@context)
-        closing = @persistency.context.current_commit
-        @persistency.close_and_add_commit
-        new_open = @persistency.context.current_commit
-        unless defer_tables.empty?
-            @persistency.float_writes(from: closing, to: new_open, defer_tables: defer_tables)
+        @persistency.with_context(@context) do
+            closing = @persistency.context.current_commit
+            @persistency.close_and_add_commit
+            new_open = @persistency.context.current_commit
+            unless defer_tables.empty?
+                @persistency.float_writes(from: closing, to: new_open, defer_tables: defer_tables)
+            end
         end
-        @context = @persistency.contexts.pop
         update
     end
 
@@ -1544,25 +1572,25 @@ class ShapeState
 
     def add_record : Nil
         if mrc = @matrix_userdata_rc
-            @persistency.contexts.push(@context)
-            mrc.hyperplane_add(0)
-            @context = @persistency.contexts.pop
+            @persistency.with_context(@context) do
+                mrc.hyperplane_add(0)
+            end
         end
     end
 
     def add_field_simple : Nil
         if mrc = @matrix_userdata_rc
-            @persistency.contexts.push(@context)
-            mrc.hyperplane_add(1)
-            @context = @persistency.contexts.pop
+            @persistency.with_context(@context) do
+                mrc.hyperplane_add(1)
+            end
         end
     end
 
     def add_field_custom(name : String, ref_field_lid : FieldLID? = nil) : Nil
         if mrc = @matrix_userdata_rc
-            @persistency.contexts.push(@context)
-            mrc.hyperplane_add(1, name: name, refers_to_field_lid: ref_field_lid)
-            @context = @persistency.contexts.pop
+            @persistency.with_context(@context) do
+                mrc.hyperplane_add(1, name: name, refers_to_field_lid: ref_field_lid)
+            end
         end
     end
 
@@ -1654,72 +1682,74 @@ class ShapeState
     # crucially every OTHER Shape's gate, which is the only way it learns of this edit) is
     # untouched.
     def update(force_update = false, suppress_announce = false) : Nil
-        @persistency.contexts.push(@context)
-        new_table = @widget_table_picker.changed?
-        # The gate must include the FIELDLIST's version: a Field-list drop writes only the
-        # fieldlist's own memory table (class/level/rank), not persistency, yet it changes the
-        # pivot's structure. Without it, invalidate_all! below never fires for such a change and
-        # the matrix keeps its viewport_cache buffer; pixels vacated by old merged cells then
-        # survive as ghost separators. (crymbleui's reconcile clear is keyed on adapter-instance
-        # IDENTITY, which embrace holds stable — one adapter reused across rebuilds — so it never
-        # auto-clears here; this invalidate_all! push is what must.) Deliberately the raw MEMORY version,
-        # not Fieldlist#version: the latter pulls the VirtualTable's update at gate time — before
-        # the commit-path fix-up below has repaired the context mid-history-navigation.
-        version = @persistency.version + @persistency.context.version + (@fieldlist.try(&.table_memory.version) || 0)
-        if force_update || new_table || (@version != version)
-            # update branching information
-            current_commit = @persistency.context.current_commit
-            new_branch = false
-            leaf = current_commit
-            if @commit_path.index(leaf)
-                leaf = @commit_path[-1]  # Current commit is in path → use path's leaf (stay on branch)
-            else
-                new_branch = true
-            end
-            @commit_leaves = @persistency.get_ordered_commit_leaves
-            if leaf = @persistency.get_leaf(leaf)
-                @commit_leaf_rank = @commit_leaves.index!(leaf)
-            else
-                @commit_leaf_rank = 0
-                leaf = @commit_leaves[0]
-            end
-            @commit_path = @persistency.get_commit_path(leaf)
-            if new_branch
-                @persistency.context.current_commit = @commit_leaves[@commit_leaf_rank]
-            end
-            @table_lid = @widget_table_picker.lid
-            if table_lid = @table_lid
-                # Set up adapters when the user picked a different table (new_table),
-                # OR on first-run of this Shape (@configurator still nil — e.g. the
-                # constructor passed an explicit table_lid that the picker reported
-                # as "not changed" because it was set at construction time).
-                if new_table || @configurator.nil?
-                    # Pin the Configurator to this Shape's context so meta reads
-                    # (post-commit / history navigation / deferred-table float)
-                    # always use this Shape's view regardless of what's on the
-                    # global context stack.
-                    configurator = Table::VirtualTable::Configurator(Cell, BaseCell).new(@persistency, table_lid, @context)
-                    configurator.toggle_select(configurator.tree)
-                    vt = configurator.run
-                    @configurator = configurator
-                    @fieldlist = Table::Lazy::Fieldlist(FieldlistCell, Cell).new(vt)
-                    setup_adapters(vt)
+        @persistency.with_context(@context) do
+            new_table = @widget_table_picker.changed?
+            # The gate must include the FIELDLIST's version: a Field-list drop writes only the
+            # fieldlist's own memory table (class/level/rank), not persistency, yet it changes the
+            # pivot's structure - and crymble-ui's MatrixAdapter contract wants a structural change
+            # ANNOUNCED (invalidate_all! below): embrace reuses one adapter across rebuilds, so the
+            # adapter-swap clear never fires, and the one reconcile check sees only a change of the
+            # row/column COUNT (doc/08-shapes.md says how narrowly, and what runs it). Without the term,
+            # stale pixels were once left where merged cells split (d7a61f0f); today a layer re-rendered
+            # after a layout change is also cleared in full, and only with both gone - and the headers
+            # back in that layer - do they return. Deliberately the raw MEMORY version, not
+            # Fieldlist#version: the latter pulls the VirtualTable's update at gate time — before the
+            # commit-path fix-up below has repaired the context mid-history-navigation.
+            version = @persistency.version_in(@context) + (@fieldlist.try(&.table_memory.version) || 0)
+            if force_update || new_table || (@version != version)
+                # update branching information
+                current_commit = @persistency.context.current_commit
+                new_branch = false
+                leaf = current_commit
+                if @commit_path.index(leaf)
+                    leaf = @commit_path[-1]  # Current commit is in path → use path's leaf (stay on branch)
+                else
+                    new_branch = true
                 end
-            else
-                @vhtree_adapter = nil
-                @matrix_adapter = nil
-                @fieldlist_adapter = nil
-                @matrix_userdata_rc = nil
+                @commit_leaves = @persistency.get_ordered_commit_leaves
+                if leaf = @persistency.get_leaf(leaf)
+                    @commit_leaf_rank = @commit_leaves.index!(leaf)
+                else
+                    @commit_leaf_rank = 0
+                    leaf = @commit_leaves[0]
+                end
+                @commit_path = @persistency.get_commit_path(leaf)
+                if new_branch
+                    @persistency.context.current_commit = @commit_leaves[@commit_leaf_rank]
+                end
+                @table_lid = @widget_table_picker.lid
+                if table_lid = @table_lid
+                    # Set up adapters when the user picked a different table (new_table),
+                    # OR on first-run of this Shape (@configurator still nil — e.g. the
+                    # constructor passed an explicit table_lid that the picker reported
+                    # as "not changed" because it was set at construction time).
+                    if new_table || @configurator.nil?
+                        # Pin the Configurator to this Shape's context so meta reads
+                        # (post-commit / history navigation / deferred-table float)
+                        # always use this Shape's view regardless of what's on the
+                        # global context stack.
+                        configurator = Table::VirtualTable::Configurator(Cell, BaseCell).new(@persistency, table_lid, @context)
+                        configurator.toggle_select(configurator.tree)
+                        vt = configurator.run
+                        @configurator = configurator
+                        @fieldlist = Table::Lazy::Fieldlist(FieldlistCell, Cell).new(vt)
+                        setup_adapters(vt)
+                    end
+                else
+                    @vhtree_adapter = nil
+                    @matrix_adapter = nil
+                    @fieldlist_adapter = nil
+                    @matrix_userdata_rc = nil
+                end
+                @version = version
+                # Invalidate matrix adapter so VirtualMatrix refreshes cached cells
+                @matrix_adapter.try &.invalidate_all! unless suppress_announce
+                # Diff-Shape: refresh the precomputed diff state and row filter so
+                # edits made elsewhere (in another shape, on the same open commit)
+                # are reflected. Cheap: O(R·F) on the diff-Shape's table only.
+                refresh_diff_state! if @diff_target_commit
             end
-            @version = version
-            # Invalidate matrix adapter so VirtualMatrix refreshes cached cells
-            @matrix_adapter.try &.invalidate_all! unless suppress_announce
-            # Diff-Shape: refresh the precomputed diff state and row filter so
-            # edits made elsewhere (in another shape, on the same open commit)
-            # are reflected. Cheap: O(R·F) on the diff-Shape's table only.
-            refresh_diff_state! if @diff_target_commit
         end
-        @context = @persistency.contexts.pop
     end
 
     # Re-run precompute_diff_state! against the cached parent commit and
@@ -1777,15 +1807,11 @@ class ShapeState
         # in the data changed. `on_cell_activate` runs this probe on EVERY typed character, which
         # is what made press-and-hold typing stall while backspace stayed fluid.
         #
-        # `ensure`, not a bare pop, because the guard below returns early for every non-Drilldown
-        # cell — i.e. almost always — and a leaked push leaves the ContextStack one frame deeper
-        # for the rest of the session.
-        @persistency.contexts.push(@context)
-        begin
+        # Persistency#with_context, because the guard below returns early for every non-Drilldown cell -
+        # i.e. almost always - and its ensure still takes the context off the stack.
+        clusters = @persistency.with_context(@context) do
             return nil unless rc.get_assignability(index.to_a) == Table::Lazy::Pivot::Assignability::Drilldown
-            clusters = rc.get_cell_clusters(index.to_a)
-        ensure
-            @context = @persistency.contexts.pop
+            rc.get_cell_clusters(index.to_a)
         end
         new_shape = dup_shape("#{@title} ▸ drill")
         new_shape.fieldlist_normalize!

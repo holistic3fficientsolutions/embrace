@@ -119,4 +119,13 @@ module TSV
         rows.pop if rows.size > 1 && rows.last.size == 1 && rows.last.first.empty?
         rows
     end
+
+    # The value when `text` is exactly what `encode` writes for one cell - one trailing line break allowed,
+    # as a spreadsheet appends one to what it copies - else nil. The round trip is the whole test: the
+    # decoder is tolerant, so `"Hi" she said` or `"hello"` decode to values, but encode would write neither,
+    # so they are not one cell's encoding and stay text. It also rejects more than one field or row.
+    def single_field(text : String) : String?
+        value = decode(text).first?.try(&.first?) || return nil
+        value if encode([[value]]) == text.chomp
+    end
 end

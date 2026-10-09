@@ -4,6 +4,7 @@ require "../../src/gui/embrace"
 require "../../src/debug-helper"
 require "../../src/constants"
 require "crymble-ui/testing/test_renderer"
+require "./support/fixtures"
 
 include Persistency
 
@@ -11,11 +12,7 @@ include Persistency
 
 private def make_multi_table_app : {EmbraceApp, Hash(String, FieldLID | TableLID | RecordLID)}
     # Two tables so the tristate (≥2 change rows) is triggered.
-    app = EmbraceApp.new
-    persistency = app.persistency
-    hash = Hash(String, FieldLID | TableLID | RecordLID).new
-    help = TableReader(Persistency::Default, Persistency::Cell).new(persistency, hash)
-    help << <<-EOT
+    Fixtures.app(<<-EOT)
         Sales
         Region | Product | Amount
         north | widget | 10
@@ -24,12 +21,6 @@ private def make_multi_table_app : {EmbraceApp, Hash(String, FieldLID | TableLID
         Name
         Alice
     EOT
-    sales_lid = hash["Sales"].as(TableLID)
-    app.shapes.clear
-    ctx = persistency.context.clone
-    app.shapes << ShapeState.new("Sales", persistency, ctx, sales_lid)
-    app.request_rebuild
-    {app, hash}
 end
 
 describe "History changes summary — tristate" do

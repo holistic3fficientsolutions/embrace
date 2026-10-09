@@ -99,14 +99,24 @@ memory version**. The fieldlist term is essential: a Field-list drop writes only
 fieldlist's own memory table (class/level/rank), not persistency, yet it changes the
 pivot's structure. The gate is what fires `matrix_adapter.invalidate_all!` — the push
 signal that makes the VirtualMatrix clear its cached content buffer — for every change
-*except* a single-cell write, which announces for itself (see below). Without it, a
-structure change that keeps the same grid dimensions (e.g. merged cells splitting after
-a field move) leaves ghost pixels in the vacated separator bands: crymbleui's reconcile
-clear is keyed on adapter-instance identity, which embrace holds stable (one adapter
-reused across rebuilds), so it never auto-clears here — the push is required. The
-regression is guarded by `spec/gui/fieldlist_move_stale_separator_spec.cr`. It is deliberately the raw memory
-version, not `Fieldlist#version`, which would pull the VirtualTable's update at gate
-time — before the gate body has repaired the context mid-history-navigation.
+*except* a single-cell write, which announces for itself (see below). This is crymbleui's
+MatrixAdapter contract: a structural change is announced when it is made. embrace holds
+one adapter across rebuilds, so the matrix's adapter-swap clear never fires. The one check
+for a missed announce is crymbleui's reconcile check, and it is narrow: a reconciled
+matrix, the same adapter instance, no other announce pending, and a change of the row or
+column COUNT - a change that keeps both counts passes it. It raises only under
+`-Dverify_bounds` (a normal build heals it as a late announce), inside a frame the
+TestRenderer swallows; `spec/spec_helper.cr` fails a run whose frames swallowed one.
+`tools/verify-bounds-gui.sh` runs under the flag the GUI specs that go red when this gate
+misses the fieldlist's version - in CI, and before a push. Without the fieldlist term, a
+change that keeps both counts (merged cells splitting after a field move) once left stale
+pixels in the vacated separator bands (fixed July 2026). Today a layer re-rendered after a
+layout change is also cleared in full, so the pixels stay clean unless both clears are
+gone (measured September 2026); and the row headers that split paint in a sticky layer,
+which is rebuilt on every build. `spec/gui/fieldlist_move_unmerge_spec.cr` drives the
+sequence that showed it. It is deliberately the raw memory version, not
+`Fieldlist#version`, which would pull the VirtualTable's update at gate time — before the
+gate body has repaired the context mid-history-navigation.
 
 **A single-cell write announces for itself.** Editing one cell says so precisely —
 `invalidate_cell!` instead of the whole-grid push — so the matrix repaints that cell rather
@@ -170,7 +180,42 @@ looking at.
 | Adding/removing records or fields | Changing fieldlist Row/Col/Agg/Unused |
 | Drag-and-drop (reassigns clusters) | Changing fieldlist levels |
 | Factor-out / factor-in | Changing sort direction |
-| Import table | Duplicating or closing Shapes |
+| Paste clipboard / import xlsx sheet as new table (lands on this Shape's branch) | Duplicating or closing Shapes |
+
+**What a cell drag does.** The dragged record takes the values of the cell it is dropped on:
+- **Onto an empty cell of another group:** the record moves into that group.
+- **Onto an occupied cell:** the record also takes that cell's column values. Al dropped on Cy's cell
+  becomes a second Cy, and the cell then shows both records' aggregate.
+- **Onto a group's header:** the record takes that header's value and keeps its others.
+- **In the detail layout** (one record per row): each row is one record, so the only value a move can
+  give it is the target's Rank - the move **reorders** the records.
+
+The cursor follows the moved record. The move is data, written to the open commit: another Shape on
+the same commit shows it, and stepping back to the commit before shows the grid without it
+([09-history](09-history.md)).
+
+A cell moves only within its own Shape: dropped on another Shape - even one of the same table - it moves
+nothing, and no cell there lights up while it hovers.
+
+**Moving a cell with Ctrl+X / Ctrl+V.** Ctrl+X (or the cell's context menu, *Cut cell*) marks a cell
+with a moving outline; Ctrl+V (or *Paste cell*) on another cell of the same Shape moves it there - the
+same move as a drag, so everything above applies, an occupied target included. The mark is kept while
+you move around (arrow keys, clicks) and ends:
+- with the paste;
+- with Escape - once nothing else is open: an Escape that backs out of a cell editor or closes a menu
+  or a list keeps the mark, the next one ends it; while a text field outside the grid has the focus
+  (a filter's search, say), Escape belongs to that field and the mark stays;
+- with the first thing typed or pasted into another cell - into its editor, or into a reference cell's
+  list (opening either alone keeps the mark); editing the marked cell itself keeps it until its new value
+  is saved, and the save ends it;
+- with any change of the data or of the Shape's perspective - an inserted or deleted record, a cell set
+  (typed, picked, toggled), a drag that moves a cell, a commit, a history step, and a change made in
+  another Shape of the same table too; a filter, a sort, a regroup, a level change, a switch of the
+  Shape's table: the mark names a place in the grid, and such a change can move what is there;
+- when the Shape closes.
+
+A paste in another Shape moves nothing; the status bar names the Shape the cut cell is in. With nothing
+marked, it says so and why a mark ends.
 
 ## When a Cell Cannot Show Its Whole Value
 
@@ -224,10 +269,15 @@ neither chord collides with committing. Nothing in the interface announces these
 paragraph is where they are documented.
 
 Breaks also arrive without being typed: pasting a table from a spreadsheet keeps them, and an
-`.xlsx` cell wrapped with `Alt`+`Enter` keeps them through import. However a multi-line cell
-copied from a spreadsheet and pasted *into an open editor* arrives with the quotes the
-spreadsheet wrote around it, because that is how spreadsheets encode a break on the clipboard;
-paste a whole table instead to have them decoded.
+`.xlsx` cell wrapped with `Alt`+`Enter` keeps them through import. A single cell copied from a
+spreadsheet and pasted *into an open editor* gives its value: a spreadsheet puts a cell holding a
+break, a tab or a quote on the clipboard in quotes (`"a` / `b"`, an inner quote doubled), and a payload
+that is exactly one cell encoded that way - a trailing line break allowed - is decoded. Anything
+else pastes as the text it is: several cells (their tabs become spaces), or text merely wrapped in
+quotes that a spreadsheet would not have added (`"hello"`). One ambiguity is accepted: text you
+typed that happens to be in that form (`"a""b"`) pastes decoded (`a"b`). To bring in several
+cells as cells, use **Paste clipboard as new table**. Ctrl+V pastes text only once the editor is
+editing; on a cell that is merely selected, it is the cell move described above.
 
 **Reading one back.** A row shows as many lines as it has height for, and marks the rest —
 see the band rules above. Drag the row taller on the row ruler to read the whole value — or switch on **Auto-size

@@ -1184,9 +1184,8 @@ end
 # rest of the session, and every later read on the base context would answer from the wrong path.
 # The branch had already wrapped the same call in `ensure`.
 #
-# The helper is what the 46 inline push/pop sites on main should converge on, one at a time and
-# only where the popped context is DISCARDED: several sites deliberately keep it
-# (`shape.context = persistency.contexts.pop`) and must not be converted.
+# Every context switch in src/ goes through it now (spec/context_stack_guard_spec.cr); a site that
+# used to keep the popped context needs nothing back - it is the object it pushed.
 describe "Persistency#with_context" do
     it "restores the stack depth, and returns the block's value" do
         p = Persistency::Default.new

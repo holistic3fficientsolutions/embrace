@@ -154,7 +154,27 @@ module FieldlistGrid
     end
 
     # Field data extracted from adapter for grid building
-    private record FieldInfo, ri : Int32, name : String, row_class : GUI::Widget::FieldlistConstants::RowClass, level : Int32, rank : Int32, sort_ascending : Bool
+    # `key`: the column's logical key (GUI::Ids.path_key), computed once per row per build.
+    private record FieldInfo, ri : Int32, name : String, row_class : GUI::Widget::FieldlistConstants::RowClass, level : Int32, rank : Int32, sort_ascending : Bool, key : String
+
+    # Logical ids of the field list (test handles, never shown): a field by its column key, a section
+    # and its append zone by the section in the user's words and the level as the hover text counts it
+    # (from 1). One id per widget; `fl_#{kind}_#{shape.id}_#{rest}`.
+    private def fl_id(kind : String, shape : ShapeState, rest : String) : String
+        "fl_#{kind}_#{shape.id}_#{rest}"
+    end
+
+    # A section's id suffix: the section in the user's words, the level as the hover text counts it
+    # (the stored level + 1). The one place that base is decided.
+    private def fl_section_suffix(row_class : GUI::Widget::FieldlistConstants::RowClass, stored_level : Int32) : String
+        word = case row_class
+               in .column_header? then "columns"
+               in .row_header?    then "rows"
+               in .aggregate?     then "aggregates"
+               in .unused?        then "unused"
+               end
+        "#{word}_#{stored_level + 1}"
+    end
 
     # Convert CamelCase field name to space-separated display name
     # e.g. "PersonTimeProjectAllocation" → "Person Time Project Allocation"
@@ -178,7 +198,8 @@ module FieldlistGrid
             rank = adapter.cell_read({ri, GUI::Widget::FieldlistConstants::ColumnIndices::Rank}).as(Int64).to_i
             sort_val = adapter.cell_read({ri, GUI::Widget::FieldlistConstants::ColumnIndices::SortAscending})
             is_asc = sort_val == true || sort_val == 1_i64
-            FieldInfo.new(ri: ri, name: name, row_class: row_class, level: level, rank: rank, sort_ascending: is_asc)
+            FieldInfo.new(ri: ri, name: name, row_class: row_class, level: level, rank: rank, sort_ascending: is_asc,
+                key: shape.field_key(ri))
         end
 
         # Max level from col/row fields only (+ 1 extra empty level for expansion)
@@ -230,10 +251,11 @@ module FieldlistGrid
                     background_color: fl_agg_bg,
                     hover_color: fl_drag_hl,
                     highlight_opacity: fl_drag_op,
+                    id: fl_id("field", shape, field.key),
                 )
 
                 drag_data = FieldDragData.new(field.ri, field.name)
-                draggable = CrymbleUI::DraggableBox.new(drag_data)
+                draggable = CrymbleUI::DraggableBox.new(drag_data, id: fl_id("drag", shape, field.key))
                 padded = CrymbleUI::HStack.new(padding: 3.0)
                 padded.add_child(CrymbleUI::Text.new(display_name(field.name), font_scale: -1))
                 draggable.add_child(padded)
@@ -252,13 +274,15 @@ module FieldlistGrid
                 background_color: nil,
                 hover_color: fl_drag_hl,
                 highlight_opacity: fl_drag_op,
+                id: fl_id("zone", shape, fl_section_suffix(GUI::Widget::FieldlistConstants::RowClass::Aggregate, level)),
             )
             trailing.add_child(CrymbleUI::Text.new("  ", font_scale: -1))
             trailing.hover_text = "Aggregates block"
             cells << trailing.as(CrymbleUI::Widget)
 
             # Wrap this level's cells in its own RecursiveGrid (single row)
-            inner_grid = CrymbleUI::RecursiveGrid.new(content: [cells], spacing: 4.0)
+            inner_grid = CrymbleUI::RecursiveGrid.new(content: [cells], spacing: 4.0,
+                id: fl_id("section", shape, fl_section_suffix(GUI::Widget::FieldlistConstants::RowClass::Aggregate, level)))
             [inner_grid.as(CrymbleUI::Widget)]
         end
 
@@ -271,6 +295,7 @@ module FieldlistGrid
             background_color: nil,
             hover_color: fl_drag_hl,
             highlight_opacity: fl_drag_op,
+            id: fl_id("zone", shape, fl_section_suffix(GUI::Widget::FieldlistConstants::RowClass::Aggregate, outer_level)), # a new line
         )
         empty_cell.add_child(CrymbleUI::Text.new("  ", font_scale: -1))
         empty_cell.hover_text = "Aggregates block"
@@ -333,6 +358,7 @@ module FieldlistGrid
                                  target_level : Int32, show_sort : Bool = true) : CrymbleUI::Widget
         insert_rank = section_fields.empty? ? 0 : section_fields.last.rank + 1
         outer_handler = make_fl_drop_handler(adapter, shape, target_class, target_level, insert_rank)
+        section = fl_section_suffix(target_class, target_level)
 
         # Hover info string
         section_info = case target_class
@@ -358,10 +384,11 @@ module FieldlistGrid
                     background_color: nil,
                     hover_color: fl_drag_hl,
                     highlight_opacity: fl_drag_op,
+                    id: fl_id("field", shape, field.key),
                 )
 
                 drag_data = FieldDragData.new(field.ri, field.name)
-                draggable = CrymbleUI::DraggableBox.new(drag_data)
+                draggable = CrymbleUI::DraggableBox.new(drag_data, id: fl_id("drag", shape, field.key))
                 name_text = CrymbleUI::Text.new(display_name(field.name), font_scale: -1)
                 draggable.add_child(name_text)
                 drop_zone.add_child(draggable)
@@ -376,6 +403,7 @@ module FieldlistGrid
                         checked: field.sort_ascending,
                         font_scale: -2,
                         box_scale: -1,
+                        id: fl_id("sort", shape, field.key),
                     ) do
                         adapter.cell_assign({captured_ri, GUI::Widget::FieldlistConstants::ColumnIndices::SortAscending}, !captured_asc)
                         request_rebuild
@@ -389,7 +417,7 @@ module FieldlistGrid
 
             # VStack with background color — no wrapper needed so Expanded gets tight height
             grid = CrymbleUI::RecursiveGrid.new(content: rows, spacing: 4.0)
-            vs = CrymbleUI::VStack.new(padding: 4.0, spacing: 2.0, background_color: bg)
+            vs = CrymbleUI::VStack.new(padding: 4.0, spacing: 2.0, background_color: bg, id: fl_id("section", shape, section))
             vs.add_child(grid)
 
             # Trailing drop zone for appending — fills remaining vertical+horizontal space
@@ -400,6 +428,7 @@ module FieldlistGrid
                 background_color: nil,
                 hover_color: fl_drag_hl,
                 highlight_opacity: fl_drag_op,
+                id: fl_id("zone", shape, section),
             )
             append_drop.add_child(CrymbleUI::Text.new("  ", font_scale: -1))
             append_drop.hover_text = section_info
@@ -419,6 +448,7 @@ module FieldlistGrid
                 background_color: bg,
                 hover_color: fl_drag_hl,
                 highlight_opacity: fl_drag_op,
+                id: fl_id("zone", shape, section), # an empty section: its one drop target
             )
             section_drop.add_child(content_widget)
             section_drop.hover_text = section_info

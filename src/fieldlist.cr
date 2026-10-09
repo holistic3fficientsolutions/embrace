@@ -168,10 +168,19 @@ class Table::Lazy::Fieldlist(T,U) < Table::Lazy::Raw::Base(T)
     protected def map_hyperplane(dimension : Int32, index : Index) : {Table::Lazy::Base(T),Int32,Index}|Nil
         @table.map_hyperplane(dimension, index)
     end
+    # The stable user column id row `ri` arranges (the parent's #hyperplane_get_ids currency) - what
+    # the public view's Column shows as a POSITION instead.
+    def column_id(ri : Int32) : Int32
+        update
+        @table_internal[[ri, ColumnIndices::Column.value]].as(Int64).to_i32
+    end
     def hyperplane_get_name(dimension : Int32, index : Index) : String
         "" # TODO(fieldlist): stub — returns an empty name
     end
-    def version : Int32 # gets incremented for every #set; this is the trigger for updating caches
+    # Syncs first, unlike a table's version: update WRITES into @table_internal - the table this version is made of -
+    # so the bare sum is not a fixed point, and a pivot keyed on it would rebuild twice. The sync is one compare when
+    # stable, O(#fields) after a change - never a derivation over the rows.
+    def version : Int32
         update
         @parent.version + @table_internal.version
     end

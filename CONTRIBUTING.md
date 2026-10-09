@@ -50,12 +50,13 @@ in a single `crystal spec` invocation can crash because the GUI specs spin up
 their own fibers/event loop:
 
 ```sh
-crystal spec spec/*.cr        # core / data-layer specs
-crystal spec spec/gui/*.cr    # GUI specs
+crystal spec spec/*.cr spec/table/*.cr   # core / data-layer specs
+crystal spec spec/gui/*.cr               # GUI specs
+tools/verify-bounds-gui.sh               # GUI specs that check announces, under -Dverify_bounds
 ```
 
-Please make sure both groups pass before opening a pull request, and add tests
-for any behaviour you change or add.
+Please make sure all three pass before opening a pull request - they are what CI
+runs - and add tests for any behaviour you change or add.
 
 ### Coding style
 

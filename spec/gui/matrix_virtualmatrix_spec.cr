@@ -4,6 +4,7 @@ require "../../src/gui/shape"
 require "../../src/debug-helper"
 require "../../src/constants"
 require "crymble-ui"
+require "./support/fixtures"
 
 include Persistency
 
@@ -20,15 +21,10 @@ private def make_demo_persistency : Persistency::Default
   persistency
 end
 
-private def create_shape(persistency : Persistency::Default) : ShapeState
-  context = persistency.context.clone
-  ShapeState.new("Shape", persistency, context)
-end
-
 describe "VirtualMatrix integration with SimpleMatrixAdapter" do
   it "constructs VirtualMatrix from adapter without crash" do
     persistency = make_demo_persistency
-    shape = create_shape(persistency)
+    shape = ShapeState.new("Shape", persistency, persistency.context.clone)
     adapter = shape.matrix_adapter.not_nil!
     matrix = CrymbleUI::VirtualMatrix.new(adapter: adapter, id: "test_matrix")
     matrix.rows.should be > 0
@@ -37,7 +33,7 @@ describe "VirtualMatrix integration with SimpleMatrixAdapter" do
 
   it "detects correct grid dimensions from adapter" do
     persistency = make_demo_persistency
-    shape = create_shape(persistency)
+    shape = ShapeState.new("Shape", persistency, persistency.context.clone)
     adapter = shape.matrix_adapter.not_nil!
     rows_order, cols_order = adapter.get_scrollorder
     matrix = CrymbleUI::VirtualMatrix.new(adapter: adapter, id: "test_matrix")
@@ -47,7 +43,7 @@ describe "VirtualMatrix integration with SimpleMatrixAdapter" do
 
   it "has headers in scroll order (at tail for sticky)" do
     persistency = make_demo_persistency
-    shape = create_shape(persistency)
+    shape = ShapeState.new("Shape", persistency, persistency.context.clone)
     adapter = shape.matrix_adapter.not_nil!
     rows_order, cols_order = adapter.get_scrollorder
     # Check that at least one header cell exists among the tail rows
@@ -76,7 +72,7 @@ describe "VirtualMatrix integration with SimpleMatrixAdapter" do
         Sauron  | Former  | 200
     EOT
 
-    shape = create_shape(persistency)
+    shape = ShapeState.new("Shape", persistency, persistency.context.clone)
     shape.update(true)
 
     # Get column names BEFORE the move

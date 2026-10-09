@@ -13,4 +13,4 @@ app = EmbraceApp.new
   # what it watches and, importantly, what it cannot see.
   EmbraceProbe.start(app)
 {% end %}
-CrymbleUI.run(app)
+Recovery.guarded(app) { CrymbleUI.run(app) }

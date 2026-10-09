@@ -10,6 +10,7 @@ require "../persistency"
 module GUI::Widget
 
 class TablePicker
+    class_property rebuild_count : Int64 = 0_i64 # its lists rebuilt (a spec's probe)
     @persistency : Persistency::Default
     getter context : Persistency::Context
     @version : Int32? = nil
@@ -79,62 +80,65 @@ class TablePicker
     end
 
     def add_table(name : String) : Nil
-        @persistency.contexts.push(@context)
-        table_lid = @persistency.add_table(name)
-        if @prefill_table
-            @persistency.add_field(table_lid, "") # truth: un-named; displays as "(unnamed)"
-            @persistency.add_record(table_lid)
+        table_lid = @persistency.with_context(@context) do
+            @persistency.add_table(name).tap do |lid|
+                if @prefill_table
+                    @persistency.add_field(lid, "") # truth: un-named; displays as "(unnamed)"
+                    @persistency.add_record(lid)
+                end
+            end
         end
-        @context = @persistency.contexts.pop
         @added_lid = table_lid
         self.lid = table_lid
     end
 
     def rename_current(name : String) : Nil
         if lid = @lid
-            @persistency.contexts.push(@context)
-            @persistency.set_value(MetaFieldLIDs::Names, lid, name)
-            @context = @persistency.contexts.pop
+            @persistency.with_context(@context) do
+                @persistency.set_value(MetaFieldLIDs::Names, lid, name)
+            end
         end
     end
 
     def remove_current : Nil
         if lid = @lid
-            @persistency.contexts.push(@context)
-            @persistency.remove_table(lid)
-            @context = @persistency.contexts.pop
+            @persistency.with_context(@context) do
+                @persistency.remove_table(lid)
+            end
             @lid = nil
         end
     end
 
     private def update(force = false) : Nil
-        @persistency.contexts.push(@context)
-        version = @persistency.version + @persistency.context.version
-        if force || (@version != version)
-            table = @persistency.get_table(MetaFieldLIDs::TableLastTable)
-            table.sort! { |x, y| x[2].as(String) <=> y[2].as(String) }
-            @lids = [] of Persistency::TableLID?
-            @names = [] of String
-            if table.empty? || !@suppress_empty
-                @lids << nil
-                @names << "(no table)"
+        @persistency.with_context(@context) do
+            version = @persistency.meta_version_in(@context) # its list is metadata: tables / fields and their names
+            if force || (@version != version)
+                TablePicker.rebuild_count += 1
+                table = @persistency.get_table(MetaFieldLIDs::TableLastTable)
+                table.sort! { |x, y| x[2].as(String) <=> y[2].as(String) }
+                @lids = [] of Persistency::TableLID?
+                @names = [] of String
+                if table.empty? || !@suppress_empty
+                    @lids << nil
+                    @names << "(no table)"
+                end
+                @lids += table.map(&.[0].as(Persistency::TableLID?))
+                @names += table.map { |row| @persistency.display_name(row[0].as(Persistency::TableLID)) } # blank -> "(unnamed)"
+                index = @lids.index(@lid)
+                if index.nil?
+                    @changed = true
+                    index = 0
+                end
+                @lid_index = index
+                @lid = @lids[index]
+                @version = version
             end
-            @lids += table.map(&.[0].as(Persistency::TableLID?))
-            @names += table.map { |row| @persistency.display_name(row[0].as(Persistency::TableLID)) } # blank -> "(unnamed)"
-            index = @lids.index(@lid)
-            if index.nil?
-                @changed = true
-                index = 0
-            end
-            @lid_index = index
-            @lid = @lids[index]
-            @version = version
         end
-        @context = @persistency.contexts.pop
     end
 end
 
 class FieldPicker
+    class_property rebuild_count : Int64 = 0_i64 # its lists rebuilt (a spec's probe)
     @persistency : Persistency::Default
     @context : Persistency::Context
     @table_lid : Persistency::FieldLID?
@@ -206,9 +210,7 @@ class FieldPicker
 
     def add_field(name : String, ref_field_lid : Persistency::FieldLID? = nil) : Nil
         if table_lid = @table_lid
-            @persistency.contexts.push(@context)
-            field_lid = @persistency.add_field(table_lid, name, ref_field_lid)
-            @context = @persistency.contexts.pop
+            field_lid = @persistency.with_context(@context) { @persistency.add_field(table_lid, name, ref_field_lid) }
             @added_lid = field_lid
             self.lid = field_lid
         end
@@ -216,52 +218,53 @@ class FieldPicker
 
     def rename_current(name : String) : Nil
         if lid = @lid
-            @persistency.contexts.push(@context)
-            @persistency.set_value(MetaFieldLIDs::Names, lid, name)
-            @context = @persistency.contexts.pop
+            @persistency.with_context(@context) do
+                @persistency.set_value(MetaFieldLIDs::Names, lid, name)
+            end
         end
     end
 
     def remove_current : Nil
         if (table_lid = @table_lid) && (lid = @lid)
-            @persistency.contexts.push(@context)
-            @persistency.remove_field(table_lid, lid)
-            @context = @persistency.contexts.pop
+            @persistency.with_context(@context) do
+                @persistency.remove_field(table_lid, lid)
+            end
             @lid = nil
         end
     end
 
     private def update(force = false) : Nil
-        @persistency.contexts.push(@context)
-        version = @persistency.version + @persistency.context.version
-        if force || (@version != version)
-            @lids = [] of Persistency::FieldLID?
-            @names = [] of String
-            field_lids = [] of Persistency::FieldLID
-            field_lids = @persistency.get_field_lids(@table_lid.not_nil!) if @table_lid
-            if field_lids.empty? || !@suppress_empty
-                @lids << nil
-                @names << "(no field)"
-            end
-            if @table_lid
-                field_lids.each do |lid|
-                    if !@suppress_references || @persistency.get_value(MetaFieldLIDs::RefersTo, lid).nil?
-                        name = @persistency.display_name(lid) # blank -> "(unnamed)"
-                        @lids << lid
-                        @names << name
+        @persistency.with_context(@context) do
+            version = @persistency.meta_version_in(@context) # its list is metadata: tables / fields and their names
+            if force || (@version != version)
+                FieldPicker.rebuild_count += 1
+                @lids = [] of Persistency::FieldLID?
+                @names = [] of String
+                field_lids = [] of Persistency::FieldLID
+                field_lids = @persistency.get_field_lids(@table_lid.not_nil!) if @table_lid
+                if field_lids.empty? || !@suppress_empty
+                    @lids << nil
+                    @names << "(no field)"
+                end
+                if @table_lid
+                    field_lids.each do |lid|
+                        if !@suppress_references || @persistency.get_value(MetaFieldLIDs::RefersTo, lid).nil?
+                            name = @persistency.display_name(lid) # blank -> "(unnamed)"
+                            @lids << lid
+                            @names << name
+                        end
                     end
                 end
+                index = @lids.index(@lid)
+                if index.nil?
+                    @changed = true
+                    index = 0
+                end
+                @lid_index = index
+                @lid = @lids[index]
+                @version = version
             end
-            index = @lids.index(@lid)
-            if index.nil?
-                @changed = true
-                index = 0
-            end
-            @lid_index = index
-            @lid = @lids[index]
-            @version = version
         end
-        @context = @persistency.contexts.pop
     end
 end
 

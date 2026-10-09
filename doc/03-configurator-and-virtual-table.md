@@ -52,7 +52,9 @@ Each node gets a `{prefix, main, postfix}` triple stored in `@display_name`:
 
 ### Tree Updates
 
-The Configurator rebuilds its tree lazily when `@persistency.meta_version` changes.
+The Configurator is pinned to a context (its Shape's) and reads it whatever context is on top of
+the stack; so does its VirtualTable, for every read and write. It rebuilds its tree lazily when
+`meta_version_in(context)` changes - metadata, or that context moving - or after `context=`.
 `update` calls `update_table` and `update_field` recursively, using a stash of
 previous tree nodes (keyed by `{parent, edge}`) to preserve `is_expanded` and
 `is_selected` states across rebuilds.
@@ -159,8 +161,11 @@ display names.
 **Asking about the path instead of the field.** The stable id is *keyed by* the path that
 reached the column: `Configurator#user_id_mgr` is an `IDContainer` whose keys are those paths,
 so a column's path is recoverable without any resolver. A base column's path is `[field]`;
-every reference hop appends `[table, field]`, giving lengths 1, 3, 5, … (the root table is
-omitted). `Configurator#columns_are_unreferenced?` answers the one question that needs this —
+every reference hop appends `[field1, field2]` - the reference field and the target table's end
+of that reference, both FieldLIDs - giving lengths 1, 3, 5, … (the root table is omitted, and no
+TableLID appears). Each hop extends only its parent's path, so no sibling's segments enter it:
+a column's id does not change when a sibling reference is switched on or off.
+`Configurator#columns_are_unreferenced?` answers the one question that needs this —
 did *every* displayed column arrive without crossing a reference — and it is the right tool
 precisely where `column_identity` is the wrong one: a column can reference its way back to the
 base table and report a base-table FieldLID while still aliasing. `IDContainer#each_entry`

@@ -3,6 +3,7 @@ require "../../spec/spec_helper"
 require "../../src/gui/shape"
 require "../../src/debug-helper"
 require "../../src/constants"
+require "./support/fixtures"
 
 include Persistency
 
@@ -36,29 +37,8 @@ private def make_configured_shape : {ShapeState, LidHash}
     persistency, table_lid, hash = make_sales_setup
     context = persistency.context.clone
     shape = ShapeState.new("Sales", persistency, context, table_lid)
-    configure_row_col_agg(shape, row_name: "Region", col_name: "Product", agg_name: "Amount")
+    Fixtures.pivot(shape, ["Region"], columns: ["Product"], aggregates: ["Amount"])
     {shape, hash}
-end
-
-private def configure_row_col_agg(shape : ShapeState, row_name : String, col_name : String, agg_name : String)
-    classes = {
-        row_name => Table::Lazy::Pivot::Classes::Row.value.to_i64,
-        col_name => Table::Lazy::Pivot::Classes::Column.value.to_i64,
-        agg_name => Table::Lazy::Pivot::Classes::Aggregate.value.to_i64,
-    }
-    fl = shape.fieldlist.not_nil!
-    _ = fl.size
-    unused_value = Table::Lazy::Pivot::Classes::Unused.value.to_i64
-    (0...fl.size[0]).each do |ri|
-        fl[[ri, Table::Lazy::Fieldlist::ColumnIndices::Class.value]] = unused_value
-    end
-    classes.each do |name, class_value|
-        fl_row = (0...fl.size[0]).find do |ri|
-            fl[[ri, Table::Lazy::Fieldlist::ColumnIndices::Name.value]] == name
-        end.not_nil!
-        fl[[fl_row, Table::Lazy::Fieldlist::ColumnIndices::Class.value]] = class_value
-    end
-    shape.matrix_adapter.not_nil!.invalidate_all!
 end
 
 # Count rows in the drilled shape's underlying filtered VT (not the pivot — we
@@ -334,7 +314,7 @@ describe "Drill-down Shape consistency" do
         table_lid = hash["Allocations"].as(TableLID)
         context = persistency.context.clone
         shape = ShapeState.new("Allocations", persistency, context, table_lid)
-        configure_row_col_agg(shape, row_name: "Project", col_name: "Person", agg_name: "Allocation")
+        Fixtures.pivot(shape, ["Project"], columns: ["Person"], aggregates: ["Allocation"])
         rc = shape.matrix_userdata_rc.not_nil!
 
         drilldown_cell = nil

@@ -4,6 +4,8 @@ require "../../src/gui/embrace"
 require "../../src/gui/cell"
 require "../../src/constants"
 require "crymble-ui/testing/test_renderer"
+require "crymble-ui/testing/test_font"
+require "./support/fixtures"
 
 include Persistency
 
@@ -18,23 +20,15 @@ include Persistency
 # backgrounds that are themselves saturated (green Rows, blue Columns, brown Aggregates), and in a
 # blue that the Columns section already is.
 private def dragging_app : {EmbraceApp, CrymbleUI::Testing::TestRenderer, CrymbleUI::DropZoneBox}
-    app = EmbraceApp.new
-    hash = Hash(String, FieldLID | TableLID | RecordLID).new
-    TableReader(Persistency::Default, Persistency::Cell).new(app.persistency, hash) << <<-EOT
+    app = Fixtures.app(<<-EOT)[0]
         Items
         ab | Val
         a | 1
         b | 2
     EOT
-    app.shapes.clear
-    app.shapes << ShapeState.new("Items", app.persistency, app.persistency.context.clone, hash["Items"].as(TableLID))
-    app.request_rebuild
-    renderer = CrymbleUI::Testing::TestRenderer.new(1114, 705)
-    renderer.settle_rendering(app)
+    renderer = Fixtures.renderer(app, 1114, 705)
     shape = app.shapes.first
-    app.find("fieldlist_#{shape.id}").not_nil!.as(CrymbleUI::TreeNode).toggle
-    app.request_rebuild
-    renderer.settle_rendering(app)
+    Fixtures.open_fieldlist(app, renderer)
 
     root = app.find("fieldlist_#{shape.id}").not_nil!
     drags = [] of CrymbleUI::DraggableBox
@@ -57,10 +51,20 @@ private def dragging_app : {EmbraceApp, CrymbleUI::Testing::TestRenderer, Crymbl
 end
 
 describe "the Field list's drop feedback is as visible as the Perspective's" do
+    # The highlight covers what SHOWS of its target, and a zone of text is 0 wide where text measures 0 (core
+    # specs have no font) - there would be nothing to highlight. Measure text here, for these examples only.
+    around_each do |example|
+        font = CrymbleUI::Widget.font
+        CrymbleUI::Widget.font = CrymbleUI::Testing::TestFont.new
+        example.run
+    ensure
+        CrymbleUI::Widget.font = font
+    end
+
     it "paints the drop target at all (instrument: a drag is actually in flight)" do
         app, _, _ = dragging_app
         app.drag_manager.dragging?.should be_true
-        app.drag_manager.highlight_layer.should_not be_nil
+        app.drag_manager.highlight_layer.not_nil!.composite_anchor.should_not be_nil # shown, over its target
     end
 
     it "renders it at a strength the composite survives, not the library default" do

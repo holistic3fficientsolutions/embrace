@@ -5,12 +5,13 @@ require "../../src/gui/cell"
 require "../../src/debug-helper"
 require "../../src/constants"
 require "crymble-ui/testing/test_renderer"
+require "./support/fixtures"
 
 include Persistency
 
 # Embrace must tell the matrix WHICH kind of change happened.
 #
-# Today every edit announces `invalidate_all!` TWICE (the version gate at shape.cr:1460, then
+# Today every edit announces `invalidate_all!` TWICE (the version gate in ShapeState#update, then
 # the explicit one in the string bridge) and `invalidate_cell!` never — it has no call site in
 # src/ at all. These examples pin which announcement each write makes.
 #
@@ -49,19 +50,12 @@ class SimpleMatrixAdapter(T, U, V)
 end
 
 private def make_plain_app : EmbraceApp
-    app = EmbraceApp.new
-    p = app.persistency
-    hash = Hash(String, FieldLID | TableLID | RecordLID).new
-    TableReader(Persistency::Default, Persistency::Cell).new(p, hash) << <<-EOT
+    Fixtures.app(<<-EOT, title: "S")[0]
         Plain
         Person | Town | Note
         Alan | Boston | x
         Melanie | Boston | y
     EOT
-    app.shapes.clear
-    app.shapes << ShapeState.new("S", p, p.context.clone, hash["Plain"].as(TableLID))
-    app.request_rebuild
-    app
 end
 
 # First assignable, non-header, non-empty data cell.
@@ -79,7 +73,7 @@ private def data_cell(adapter) : Tuple(Int32, Int32)
 end
 
 # Drive the REAL commit path: cursor, type, Enter. `on_text_input` alone does not commit, so
-# counting around it would measure an uncommitted cell (cell_multiline_spec.cr:73-80).
+# counting around it would measure an uncommitted cell (cell_multiline_spec, "authors a break in an EMPTY cell").
 private def commit_edit(app, vm, rc, text : String) : Nil
     vm.set_cursor_from_cell(rc)
     text.each_char { |ch| vm.on_text_input(ch) }
@@ -90,10 +84,7 @@ end
 # A Shape on `Persons`, which references `Cities`. Alan and Melanie share Boston, so a field
 # pulled from Cities paints ONE record into TWO rows — the aliasing case.
 private def make_joined_app : EmbraceApp
-    app = EmbraceApp.new
-    p = app.persistency
-    hash = Hash(String, FieldLID | TableLID | RecordLID).new
-    TableReader(Persistency::Default, Persistency::Cell).new(p, hash) << <<-EOT
+    Fixtures.app(<<-EOT, open: "Persons", title: "J")[0]
         Cities
         City | Country
         Boston | USA
@@ -103,10 +94,6 @@ private def make_joined_app : EmbraceApp
         Alan | Boston
         Melanie | Boston
     EOT
-    app.shapes.clear
-    app.shapes << ShapeState.new("J", p, p.context.clone, hash["Persons"].as(TableLID))
-    app.request_rebuild
-    app
 end
 
 # Pull `Cities.Country` into the grid the way the GUI does: expand the City FIELD node (which
@@ -130,32 +117,8 @@ private def expand_country(shape : ShapeState) : Bool
     true
 end
 
-# Configure a row hierarchy (the matrix_reference_header_span_spec idiom): grouped headers,
-# so that editing one merges two groups — a structural change that moves merge SPANS while
-# dims and scroll order stay identical.
-private def configure_rows(shape : ShapeState, levels : Hash(String, Int32)) : Nil
-    fl = shape.fieldlist.not_nil!
-    _ = fl.size
-    unused = Table::Lazy::Pivot::Classes::Unused.value.to_i64
-    row_class = Table::Lazy::Pivot::Classes::Row.value.to_i64
-    class_col = Table::Lazy::Fieldlist::ColumnIndices::Class.value
-    name_col = Table::Lazy::Fieldlist::ColumnIndices::Name.value
-    level_col = Table::Lazy::Fieldlist::ColumnIndices::Level.value
-    (0...fl.size[0]).each { |ri| fl[[ri, class_col]] = unused }
-    levels.each do |name, level|
-        ri = (0...fl.size[0]).find { |r| fl[[r, name_col]] == name }
-        next unless ri
-        fl[[ri, class_col]] = row_class
-        fl[[ri, level_col]] = level.to_i64
-    end
-    shape.matrix_adapter.not_nil!.invalidate_all!
-end
-
 private def make_grouped_app : EmbraceApp
-    app = EmbraceApp.new
-    p = app.persistency
-    hash = Hash(String, FieldLID | TableLID | RecordLID).new
-    TableReader(Persistency::Default, Persistency::Cell).new(p, hash) << <<-EOT
+    Fixtures.app(<<-EOT, title: "G")[0]
         Tasks
         Name | Project | ID
         Alice | Alpha | 1
@@ -163,10 +126,6 @@ private def make_grouped_app : EmbraceApp
         Alice | Beta | 3
         Bob | Gamma | 4
     EOT
-    app.shapes.clear
-    app.shapes << ShapeState.new("G", p, p.context.clone, hash["Tasks"].as(TableLID))
-    app.request_rebuild
-    app
 end
 
 # Region rows x Quarter columns, Amount in the cells. South/Q2 has no record, so writing there
@@ -174,20 +133,13 @@ end
 # order or the returned index, which is why no fingerprint can see it and the assignability
 # branch has to be plumbed out of the write.
 private def make_pivot_app : EmbraceApp
-    app = EmbraceApp.new
-    p = app.persistency
-    hash = Hash(String, FieldLID | TableLID | RecordLID).new
-    TableReader(Persistency::Default, Persistency::Cell).new(p, hash) << <<-EOT
+    Fixtures.app(<<-EOT, title: "P")[0]
         Sales
         Region | Quarter | Amount
         North | Q1 | 10
         North | Q2 | 20
         South | Q1 | 30
     EOT
-    app.shapes.clear
-    app.shapes << ShapeState.new("P", p, p.context.clone, hash["Sales"].as(TableLID))
-    app.request_rebuild
-    app
 end
 
 private def configure_pivot(shape : ShapeState) : Nil
@@ -212,28 +164,11 @@ private def configure_pivot(shape : ShapeState) : Nil
 end
 
 private def make_tall_app(rows : Int32) : EmbraceApp
-    app = EmbraceApp.new
-    p = app.persistency
-    hash = Hash(String, FieldLID | TableLID | RecordLID).new
     body = String.build do |b|
         b << "Tall\nName | Note\n"
         rows.times { |i| b << "n#{i} | v#{i}\n" }
     end
-    TableReader(Persistency::Default, Persistency::Cell).new(p, hash) << body
-    app.shapes.clear
-    app.shapes << ShapeState.new("T", p, p.context.clone, hash["Tall"].as(TableLID))
-    app.request_rebuild
-    app
-end
-
-private def find_cell(adapter, want : String) : Tuple(Int32, Int32)?
-    rows, cols = adapter.get_scrollorder
-    rows.each do |r|
-        cols.each do |c|
-            return {r, c} if adapter.cell_read({r, c}).to_s == want
-        end
-    end
-    nil
+    Fixtures.app(body, title: "T")[0]
 end
 
 describe "announcement precision" do
@@ -364,8 +299,8 @@ describe "announcement precision" do
     end
 
     it "keeps announcing to OTHER Shapes on the same table" do
-        # Persistency#version is global but each ShapeState has its own @version, so the gate at
-        # shape.cr:1460 is the ONLY way Shape B learns of an edit made in Shape A. The write
+        # Persistency#version is global but each ShapeState has its own @version, so the gate in
+        # ShapeState#update is the ONLY way Shape B learns of an edit made in Shape A. The write
         # path suppresses only its OWN gate announcement; a suppression one level broader would
         # leave B stale with an otherwise green suite.
         app = make_plain_app
@@ -416,10 +351,12 @@ describe "announcement precision" do
         renderer = CrymbleUI::Testing::TestRenderer.new(1200, 800)
         renderer.settle_rendering(app)
         shape = app.shapes.first
-        configure_rows(shape, {"Name" => 0, "Project" => 1, "ID" => 2})
+        # A row hierarchy - grouped headers - so that editing one merges two groups: a structural change
+        # that moves merge SPANS while dims and scroll order stay identical.
+        Fixtures.pivot(shape, {"Name" => 0, "Project" => 1, "ID" => 2})
         renderer.settle_rendering(app)
         adapter = shape.matrix_adapter.not_nil!
-        rc = find_cell(adapter, "Beta")
+        rc = Fixtures.cell_showing(adapter, "Beta")
         rc.should_not be_nil
         adapter.cell_get_header_info(rc.not_nil!).should_not be_nil   # it really is a header cell
 
@@ -544,7 +481,7 @@ describe "announcement precision" do
         r2.settle_rendering(joined)
         a2 = sh2.matrix_adapter.not_nil!
         v2 = a2.virtual_matrix.not_nil!
-        rc2 = find_cell(a2, "USA").not_nil!
+        rc2 = Fixtures.cell_showing(a2, "USA")
         a2.probe_paints = 0
         commit_edit(joined, v2, rc2, "Mars")
         r2.settle_rendering(joined)
@@ -580,7 +517,7 @@ describe "announcement precision" do
         r2.settle_rendering(joined)
         a2 = sh2.matrix_adapter.not_nil!
         v2 = a2.virtual_matrix.not_nil!
-        rc2 = find_cell(a2, "USA").not_nil!
+        rc2 = Fixtures.cell_showing(a2, "USA")
         before2 = r2.layer_backend_clear_count
         commit_edit(joined, v2, rc2, "Mars")
         r2.settle_rendering(joined)

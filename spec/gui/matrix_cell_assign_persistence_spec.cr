@@ -4,74 +4,16 @@ require "../../src/gui/shape"
 require "../../src/debug-helper"
 require "../../src/constants"
 require "crymble-ui"
+require "./support/fixtures"
 
 include Persistency
 
-# Helper: create persistency with demo tables (reused from matrix_adapter_spec.cr)
-private def make_demo_persistency : Persistency::Default
-  persistency = Persistency::Default.new
-  hash = Hash(String, FieldLID | TableLID | RecordLID).new
-  help = TableReader(Persistency::Default, Persistency::Cell).new(persistency, hash)
-  help << <<-EOT
-      Cities
-      City | Country
-      Arizona | USA
-      Boston | USA
-
-      Persons
-      Person | City_City
-      Alan | Boston
-  EOT
-  persistency
-end
-
-private def create_shape(persistency : Persistency::Default) : ShapeState
-  context = persistency.context.clone
-  ShapeState.new("Shape", persistency, context)
-end
-
-# Create shape selecting Persons table (has City_City ReferenceCell)
-private def create_shape_for_persons(persistency : Persistency::Default) : ShapeState
-  context = persistency.context.clone
-  shape = ShapeState.new("Shape", persistency, context)
-  shape.widget_table_picker.select_index(1)  # "Persons" (alphabetically after "Cities")
-  shape.update(true)
-  shape
-end
-
-# Find first writable String data cell (non-header, non-empty, non-ReferenceCell)
-private def find_string_data_cell(adapter, rows, cols) : Tuple(Int32, Int32)
-  rows.each do |r|
-    cols.each do |c|
-      next if adapter.cell_get_header_info({r, c}) # skip headers
-      value = adapter.cell_read({r, c})
-      next if value == "" || value.is_a?(ReferenceCell)
-      return {r, c}
-    end
-  end
-  raise "No string data cell found"
-end
-
-# Find first ReferenceCell data cell
-private def find_reference_data_cell(adapter, rows, cols) : Tuple(Int32, Int32)
-  rows.each do |r|
-    cols.each do |c|
-      next if adapter.cell_get_header_info({r, c})
-      value = adapter.cell_read({r, c})
-      return {r, c} if value.is_a?(ReferenceCell)
-    end
-  end
-  raise "No reference data cell found"
-end
-
 describe "SimpleMatrixAdapter cell_assign persistence" do
   it "cell_read returns new value after cell_assign" do
-    persistency = make_demo_persistency
-    shape = create_shape(persistency)
+    persistency = Fixtures.cities_persons
+    shape = ShapeState.new("Shape", persistency, persistency.context.clone)
     adapter = shape.matrix_adapter.not_nil!
-    rows, cols = adapter.get_scrollorder
-
-    data_row, data_col = find_string_data_cell(adapter, rows, cols)
+    data_row, data_col = Fixtures.first_data_cell(adapter)
 
     adapter.cell_assign(data_row, data_col, "ZZZ")
 
@@ -79,12 +21,10 @@ describe "SimpleMatrixAdapter cell_assign persistence" do
   end
 
   it "cell_paint returns widget with new value after cell_assign" do
-    persistency = make_demo_persistency
-    shape = create_shape(persistency)
+    persistency = Fixtures.cities_persons
+    shape = ShapeState.new("Shape", persistency, persistency.context.clone)
     adapter = shape.matrix_adapter.not_nil!
-    rows, cols = adapter.get_scrollorder
-
-    data_row, data_col = find_string_data_cell(adapter, rows, cols)
+    data_row, data_col = Fixtures.first_data_cell(adapter)
 
     adapter.cell_assign(data_row, data_col, "NEW")
 
@@ -93,15 +33,13 @@ describe "SimpleMatrixAdapter cell_assign persistence" do
   end
 
   it "second shape sees value after first shape edits" do
-    persistency = make_demo_persistency
-    shape1 = create_shape(persistency)
-    shape2 = create_shape(persistency)
+    persistency = Fixtures.cities_persons
+    shape1 = ShapeState.new("Shape", persistency, persistency.context.clone)
+    shape2 = ShapeState.new("Shape", persistency, persistency.context.clone)
 
     adapter1 = shape1.matrix_adapter.not_nil!
     adapter2 = shape2.matrix_adapter.not_nil!
-    rows, cols = adapter1.get_scrollorder
-
-    data_row, data_col = find_string_data_cell(adapter1, rows, cols)
+    data_row, data_col = Fixtures.first_data_cell(adapter1)
 
     # Shape1 edits
     adapter1.cell_assign(data_row, data_col, "CROSS")
@@ -112,23 +50,19 @@ describe "SimpleMatrixAdapter cell_assign persistence" do
   end
 
   it "cell_paint returns ComboBox for ReferenceCell" do
-    persistency = make_demo_persistency
-    shape = create_shape_for_persons(persistency)
+    persistency = Fixtures.cities_persons
+    shape = Fixtures.persons_shape(persistency)
     adapter = shape.matrix_adapter.not_nil!
-    rows, cols = adapter.get_scrollorder
-
-    data_row, data_col = find_reference_data_cell(adapter, rows, cols)
+    data_row, data_col = Fixtures.first_reference_cell(adapter)
     widget = adapter.cell_paint(data_row, data_col)
     widget.should be_a(CrymbleUI::ComboBox)
   end
 
   it "cell_assign_reference changes ReferenceCell rank" do
-    persistency = make_demo_persistency
-    shape = create_shape_for_persons(persistency)
+    persistency = Fixtures.cities_persons
+    shape = Fixtures.persons_shape(persistency)
     adapter = shape.matrix_adapter.not_nil!
-    rows, cols = adapter.get_scrollorder
-
-    data_row, data_col = find_reference_data_cell(adapter, rows, cols)
+    data_row, data_col = Fixtures.first_reference_cell(adapter)
     original = adapter.cell_read({data_row, data_col}).as(ReferenceCell)
     original_rank = original.rank
 

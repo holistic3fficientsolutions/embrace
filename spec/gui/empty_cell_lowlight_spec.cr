@@ -3,6 +3,7 @@ require "../../spec/spec_helper"
 require "../../src/gui/shape"
 require "../../src/debug-helper"
 require "../../src/constants"
+require "./support/fixtures"
 
 include Persistency
 
@@ -28,31 +29,8 @@ private def make_sparse_pivot_shape : ShapeState
     table_lid = hash["Sales"].as(TableLID)
     context = persistency.context.clone
     shape = ShapeState.new("Sales", persistency, context, table_lid)
-    configure_row_col_agg(shape, row_name: "Region", col_name: "Product", agg_name: "Amount")
+    Fixtures.pivot(shape, ["Region"], columns: ["Product"], aggregates: ["Amount"])
     shape
-end
-
-# Set each fieldlist row's Class (mirrors shape_drill_spec's helper): Region=Row,
-# Product=Column, Amount=Aggregate, everything else Unused.
-private def configure_row_col_agg(shape : ShapeState, row_name : String, col_name : String, agg_name : String)
-    classes = {
-        row_name => Table::Lazy::Pivot::Classes::Row.value.to_i64,
-        col_name => Table::Lazy::Pivot::Classes::Column.value.to_i64,
-        agg_name => Table::Lazy::Pivot::Classes::Aggregate.value.to_i64,
-    }
-    fl = shape.fieldlist.not_nil!
-    _ = fl.size
-    unused_value = Table::Lazy::Pivot::Classes::Unused.value.to_i64
-    (0...fl.size[0]).each do |ri|
-        fl[[ri, Table::Lazy::Fieldlist::ColumnIndices::Class.value]] = unused_value
-    end
-    classes.each do |name, class_value|
-        fl_row = (0...fl.size[0]).find do |ri|
-            fl[[ri, Table::Lazy::Fieldlist::ColumnIndices::Name.value]] == name
-        end.not_nil!
-        fl[[fl_row, Table::Lazy::Fieldlist::ColumnIndices::Class.value]] = class_value
-    end
-    shape.matrix_adapter.not_nil!.invalidate_all!
 end
 
 describe "empty-cell lowlight (v1 parity restore)" do

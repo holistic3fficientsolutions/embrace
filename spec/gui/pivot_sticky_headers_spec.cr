@@ -4,6 +4,7 @@ require "../../src/gui/embrace"
 require "../../src/gui/cell"
 require "../../src/constants"
 require "crymble-ui/testing/test_renderer"
+require "./support/embrace_ui"
 
 include Persistency
 
@@ -15,37 +16,17 @@ include Persistency
 # crymbleui's own VirtualMatrix demo is right for exactly this reason — its `row_hdr_levels` columns
 # sit at the TAIL of the column scroll order, which is how stickiness is expressed. Field report
 # 2026-09-03: in embrace the group label sat at a constant height instead.
-private CI_NAME = GUI::Widget::FieldlistConstants::ColumnIndices::Name
 
-# One real Field-list drag: the exact proc a GUI drop runs.
-private def fl_move(app : EmbraceApp, renderer, name : String, hover : String) : Nil
-    adapter = app.shapes.first.fieldlist_adapter.not_nil!
-    ri = (0...adapter.size).find { |i| adapter.cell_read({i, CI_NAME}).to_s == name }.not_nil!
-    root = app.find("fieldlist_#{app.shapes.first.id}").not_nil!
-    zones = [] of CrymbleUI::DropZoneBox
-    stack = [root.as(CrymbleUI::Widget)]
-    while w = stack.pop?
-        if w.is_a?(CrymbleUI::DropZoneBox) && w.hover_text == hover
-            has_drag = false
-            inner = [w.as(CrymbleUI::Widget)]
-            while x = inner.pop?
-                (has_drag = true; break) if x.is_a?(CrymbleUI::DraggableBox)
-                x.children.each { |c| inner << c }
-            end
-            zones << w unless has_drag
-        end
-        w.children.each { |c| stack << c }
-    end
-    zones.empty?.should be_false, "no append drop zone for #{hover.inspect}"
-    zones.max_by(&.absolute_bounds.y).on_drop(FieldDragData.new(ri, name), CrymbleUI::Vec2.new(0.0, 0.0))
-    renderer.settle_rendering(app)
+# The Driver on the app at this spec's size, with the Shape's field list opened (as a user does
+# before dragging fields in it).
+private def opened_fieldlist(app : EmbraceApp) : EmbraceUI
+    ui = EmbraceUI.new(app, 1100, 600)
+    Fixtures.open_fieldlist(app, ui.renderer)
+    ui
 end
 
 private def grouped_app : {EmbraceApp, CrymbleUI::Testing::TestRenderer}
-    app = EmbraceApp.new
-    p = app.persistency
-    hash = Hash(String, FieldLID | TableLID | RecordLID).new
-    TableReader(Persistency::Default, Persistency::Cell).new(p, hash) << <<-EOT
+    app = Fixtures.app(<<-EOT, open: "Items")[0]
         Groups
         Grp
         a
@@ -59,64 +40,40 @@ private def grouped_app : {EmbraceApp, CrymbleUI::Testing::TestRenderer}
         b | 4
         b | 5
     EOT
-    app.shapes.clear
-    app.shapes << ShapeState.new("Items", p, p.context.clone, hash["Items"].as(TableLID))
-    app.request_rebuild
-    renderer = CrymbleUI::Testing::TestRenderer.new(1100, 600)
-    renderer.settle_rendering(app)
-    app.find("fieldlist_#{app.shapes.first.id}").not_nil!.as(CrymbleUI::TreeNode).toggle
-    app.request_rebuild
-    renderer.settle_rendering(app)
-    {app, renderer}
+    {app, opened_fieldlist(app).renderer}
 end
 
 # The same Shape, but big enough to scroll: 12 groups of 5. Built through the SAME two drags,
 # because the drag path is what the field report used and what a hand-written fieldlist skips.
 private def big_grouped_app : {EmbraceApp, CrymbleUI::Testing::TestRenderer}
-    app = EmbraceApp.new
-    hash = Hash(String, FieldLID | TableLID | RecordLID).new
     body = String.build do |io|
         io << "Groups\nGrp\n"
         (0...12).each { |g| io << "g#{g}\n" }
         io << "\nItems\nGrp_Grp | Val\n"
         (0...12).each { |g| (0...5).each { |i| io << "g#{g} | #{g * 5 + i}\n" } }
     end
-    TableReader(Persistency::Default, Persistency::Cell).new(app.persistency, hash) << body
-    app.shapes.clear
-    app.shapes << ShapeState.new("Items", app.persistency, app.persistency.context.clone, hash["Items"].as(TableLID))
-    app.request_rebuild
-    renderer = CrymbleUI::Testing::TestRenderer.new(1100, 600)
-    renderer.settle_rendering(app)
-    app.find("fieldlist_#{app.shapes.first.id}").not_nil!.as(CrymbleUI::TreeNode).toggle
-    app.request_rebuild
-    renderer.settle_rendering(app)
-    fl_move(app, renderer, "Grp", "Rows cluster block, level 1")
-    fl_move(app, renderer, "Rank", "Rows cluster block, level 2")
-    {app, renderer}
+    app = Fixtures.app(body, open: "Items")[0]
+    ui = opened_fieldlist(app)
+    shape = app.shapes.first
+    ui.drag ui.fieldlist_field(shape, "Items", "Grp"), onto: ui.rows_zone(shape, 1)
+    ui.drag ui.fieldlist_field(shape, "Items", "Rank"), onto: ui.rows_zone(shape, 2)
+    {app, ui.renderer}
 end
 
 # The field-report configuration (ab.embrace, 2026-09-03): BOTH fields dropped into the SAME Rows
 # cluster level — one level with two header columns, not a nested hierarchy. `ab` clusters (its cell
 # spans its records), `Rank` labels each record.
 private def same_level_app : {EmbraceApp, CrymbleUI::Testing::TestRenderer}
-    app = EmbraceApp.new
-    hash = Hash(String, FieldLID | TableLID | RecordLID).new
     body = String.build do |io|
         io << "Items\nab | Val\n"
         (0...15).each { |g| (0...4).each { |i| io << "#{('a' + g)} | #{g * 4 + i}\n" } }
     end
-    TableReader(Persistency::Default, Persistency::Cell).new(app.persistency, hash) << body
-    app.shapes.clear
-    app.shapes << ShapeState.new("Items", app.persistency, app.persistency.context.clone, hash["Items"].as(TableLID))
-    app.request_rebuild
-    renderer = CrymbleUI::Testing::TestRenderer.new(1100, 600)
-    renderer.settle_rendering(app)
-    app.find("fieldlist_#{app.shapes.first.id}").not_nil!.as(CrymbleUI::TreeNode).toggle
-    app.request_rebuild
-    renderer.settle_rendering(app)
-    fl_move(app, renderer, "ab", "Rows cluster block, level 1")
-    fl_move(app, renderer, "Rank", "Rows cluster block, level 1")
-    {app, renderer}
+    app = Fixtures.app(body)[0]
+    ui = opened_fieldlist(app)
+    shape = app.shapes.first
+    ui.drag ui.fieldlist_field(shape, "Items", "ab"), onto: ui.rows_zone(shape, 1)
+    ui.drag ui.fieldlist_field(shape, "Items", "Rank"), onto: ui.rows_zone(shape, 1)
+    {app, ui.renderer}
 end
 
 private def sticky_tail(cols : Array(Int32)) : Set(Int32)

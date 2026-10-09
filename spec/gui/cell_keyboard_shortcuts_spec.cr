@@ -5,6 +5,7 @@ require "../../src/gui/cell"
 require "../../src/debug-helper"
 require "../../src/constants"
 require "crymble-ui/testing/test_renderer"
+require "./support/fixtures"
 
 include Persistency
 
@@ -19,22 +20,12 @@ include Persistency
 # routing step after the focused widget declines the key.
 
 private def make_items_app : EmbraceApp
-  app = EmbraceApp.new
-  persistency = app.persistency
-  hash = Hash(String, FieldLID | TableLID | RecordLID).new
-  help = TableReader(Persistency::Default, Persistency::Cell).new(persistency, hash)
-  help << <<-EOT
+  Fixtures.app(<<-EOT)[0]
       Items
       Name | Tag
       Alpha | x
       Beta |
   EOT
-  items_lid = hash["Items"].as(TableLID)
-  app.shapes.clear
-  ctx = persistency.context.clone
-  app.shapes << ShapeState.new("Items", persistency, ctx, items_lid)
-  app.request_rebuild
-  app
 end
 
 # Settle for layout/font, then wire a real ShortcutManager and rebuild so the
@@ -104,23 +95,7 @@ describe "cell keyboard shortcuts (embrace-owned)" do
     adapter.cell_read({rc[0], rc[1]}).to_s.should eq("")
   end
 
-  # Ctrl+X arms the cut (highlights drag_source_cell); Ctrl+V consumes it,
-  # firing cell_move on the cursor target. We assert the wiring embrace owns —
-  # the cut/paste state machine — not cell_move's relational re-clustering
-  # semantics (pre-existing, unchanged by this task).
-  it "Ctrl+X arms the cut and Ctrl+V consumes it (cut/paste wiring)" do
-    sm, adapter, vm, panel = wire_shortcuts(make_items_app)
-    source = find_cell(adapter) { |v| v.to_s == "x" }
-    target = find_cell(adapter) { |v| v.to_s == "" }
-
-    vm.cursor_rc = source
-    sm.handle_key_event(key_event(SF::Keyboard::Key::X, control: true), panel).should be_true
-    vm.drag_source_cell.should eq(source) # cut armed: highlight on the source
-
-    vm.cursor_rc = target
-    sm.handle_key_event(key_event(SF::Keyboard::Key::V, control: true), panel).should be_true
-    vm.drag_source_cell.should be_nil # cut consumed by the paste
-  end
+  # (Ctrl+X / Ctrl+V - the cut/paste wiring - lives in cell_cut_spec, with what ends a cut.)
 
   it "Ctrl+T on a non-assignable header cell no-ops cleanly (no raise)" do
     sm, adapter, vm, panel = wire_shortcuts(make_items_app)

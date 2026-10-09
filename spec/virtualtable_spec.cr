@@ -12,6 +12,28 @@ private def ref2rankvalue(arg)
 end
 
 describe VirtualTable do
+    # A version read derives nothing: a persistency write makes the table stale, the version read rebuilds nothing,
+    # the next DATA read rebuilds once - under exactly the version read before it.
+    it "reads its version without rebuilding, and rebuilds once on the next data read" do
+        l = Persistency::Default.new
+        table = l.add_table("mytable")
+        person = l.add_field(table, "person")
+        rec1 = l.add_record(table)
+        l.set_value(person, rec1, "Anton")
+        c = Configurator(Cell,BaseCell).new(l, table)
+        c.toggle_select(c.tree)
+        t = c.run
+        t.size # built
+        l.set_value(person, rec1, "Anna") # stale - written past the table
+        rebuilds = Table::VirtualTable::VirtualTable.rebuild_count
+        v = t.version
+        Table::VirtualTable::VirtualTable.rebuild_count.should eq(rebuilds) # the read rebuilt nothing
+        t.size
+        Table::VirtualTable::VirtualTable.rebuild_count.should eq(rebuilds + 1) # the data read did, once
+        t.version.should eq(v)
+        t.size
+        Table::VirtualTable::VirtualTable.rebuild_count.should eq(rebuilds + 1)
+    end
     it "checking whole table selection and checking dereferencing" do
         l = Persistency::Default.new
         table = l.add_table("mytable")

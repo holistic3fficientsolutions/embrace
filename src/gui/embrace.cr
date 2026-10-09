@@ -25,7 +25,9 @@ SCREENSHOT_MODE = {{ flag?(:screenshot_mode) }}
 require "./shape"
 require "./embrace_dialogs"
 require "./embrace_context_menus"
+require "./embrace_cell_cut"
 require "./embrace_file_ops"
+require "./recovery"
 
 # design decisions
 # - no modal dialogues
@@ -89,14 +91,14 @@ class EmbraceApp < CrymbleUI::App
     @show_about : Bool = false
 
     # Dialog stack for all dialog types
-    @dialogs = Array(Dialogs::Base).new
+    @dialogs = Array(Dialogs::Hosted).new
 
-    # Context menu state: {x, y, title, items: Array({label, shortcut, enabled, action})}
-    @context_menu : {Float64, Float64, String, Array({String, String?, Bool, Proc(Nil)})}? = nil
+    # Context menu state: {x, y, title, items: Array(CtxItem)}
+    # A context-menu entry. `key` names its ACTION and gives its button the logical id ctx_<key> -
+    # never its position, which moves as entries are enabled or added.
+    record CtxItem, key : String, label : String, shortcut : String?, enabled : Bool, action : Proc(Nil)
+    @context_menu : {Float64, Float64, String, Array(CtxItem)}? = nil
     @context_menu_popup : CrymbleUI::Popup? = nil
-
-    # Clipboard for cell cut/paste: {shape_id, row, col}
-    @cut_cell : {String, Int32, Int32}? = nil
 
     # Per-shape deferred-commit state: which tables are UNCHECKED (= should
     # float to the next open commit instead of being committed now). Keyed by
@@ -206,35 +208,27 @@ class EmbraceApp < CrymbleUI::App
 
             menubar do
                 menu("File") do
-                    menu_item("New file (empty)") { do_newfile_empty }
-                    menu_item("New file (demo)") { do_newfile_demo }
-                    menu_item("Load file...") { do_load }
-                    # With the creation items, not near Save/Quit: it makes a table.
-                    # Never greyed on an empty clipboard — the clipboard API has no
-                    # cheap "is there anything?" query, so gating this would mean a
-                    # full fetch on every rebuild. Always enabled, warn on click.
-                    menu_item("Paste clipboard as new table", id: "paste_new_table") do
-                        paste_clipboard_as_new_table
-                        request_rebuild
-                    end
-                    menu_item("Save file as...") { do_save_as }
-                    save_item = menu_item("Save file", "^S") { do_save(@filename.not_nil!) if @filename }
+                    menu_item("New file (empty)", id: "mi_file_new_empty") { do_newfile_empty }
+                    menu_item("New file (demo)", id: "mi_file_new_demo") { do_newfile_demo }
+                    menu_item("Load file...", id: "mi_file_load") { do_load }
+                    menu_item("Save file as...", id: "mi_file_save_as") { do_save_as }
+                    save_item = menu_item("Save file", "^S", id: "mi_file_save") { do_save(@filename.not_nil!) if @filename }
                     save_item.enabled = !@filename.nil?
-                    menu_item("Quit", "^Q") { do_quit }
+                    menu_item("Quit", "^Q", id: "mi_file_quit") { do_quit }
                 end
                 menu("View") do
-                    menu_item("New Shape", "^N") { shape_add }
-                    zoom_in_item = menu_item("Zoom in", "^+")
+                    menu_item("New Shape", "^N", id: "mi_view_new_shape") { shape_add }
+                    zoom_in_item = menu_item("Zoom in", "^+", id: "mi_view_zoom_in")
                     zoom_in_item.on_click_action = -> { CrymbleUI::FontSizing.zoom_in; root.try &.mark_needs_layout; nil }
-                    zoom_out_item = menu_item("Zoom out", "^-")
+                    zoom_out_item = menu_item("Zoom out", "^-", id: "mi_view_zoom_out")
                     zoom_out_item.on_click_action = -> { CrymbleUI::FontSizing.zoom_out; root.try &.mark_needs_layout; nil }
                     menu_item("Shape config on one page",
                         checked: @shape_config_one_page,
-                        id: "shape_config_one_page") do
+                        id: "mi_view_one_page") do
                         @shape_config_one_page = !@shape_config_one_page
                         request_rebuild
                     end
-                    menu_item("Dark Theme", checked: @dark_theme) do
+                    menu_item("Dark Theme", checked: @dark_theme, id: "mi_view_dark") do
                         @dark_theme = !@dark_theme
                         CrymbleUI::Theme.set(@dark_theme ? :dark : :light)
                         update_bg_color
@@ -244,7 +238,7 @@ class EmbraceApp < CrymbleUI::App
                     end
                 end
                 menu("Help") do
-                    menu_item("About...") { @show_about = true; request_rebuild }
+                    menu_item("About...", id: "mi_help_about") { @show_about = true; request_rebuild }
                 end
             end
 
@@ -324,10 +318,10 @@ class EmbraceApp < CrymbleUI::App
 
             # Render all active dialogs
             @dialogs.each do |dialog|
-                next unless dialog.open
+                next unless dialog.open?
                 build_dialog(dialog)
             end
-            @dialogs.reject! { |d| !d.open }
+            @dialogs.reject! { |d| !d.open? }
 
             # Context menu: shown as Window overlay Popup (click-outside-to-close)
             # The popup is added/removed from the Window overlay list, not the DSL tree,
@@ -350,25 +344,21 @@ class EmbraceApp < CrymbleUI::App
                         rows << [sep.as(CrymbleUI::Widget), CrymbleUI::Text.new("").as(CrymbleUI::Widget)]
                     end
                     # Calculate max label width for shortcut alignment
-                    max_label_w = items.max_of { |item| item[0].size } * 8.0 + 16.0
-                    items.each_with_index do |item, i|
-                        label = item[0]
-                        shortcut = item[1]
-                        enabled = item[2]
-                        captured_action = item[3]
-                        b = CrymbleUI::Button.new(label, padding: 2.0,
+                    max_label_w = items.max_of(&.label.size) * 8.0 + 16.0
+                    items.each do |item|
+                        b = CrymbleUI::Button.new(item.label, padding: 2.0,
                             background_color: popup_bg, border_color: popup_bg,
                             text_color: CrymbleUI::Theme.current.text_default,
                             text_align: CrymbleUI::TextAlign::Left,
-                            id: "ctx_#{i}") do
+                            id: "ctx_#{item.key}") do
                             dismiss_context_menu
-                            captured_action.call
+                            item.action.call
                             request_rebuild
                         end
-                        b.enabled = enabled
-                        sc = CrymbleUI::Text.new(shortcut || "", font_scale: -1,
+                        b.enabled = item.enabled
+                        sc = CrymbleUI::Text.new(item.shortcut || "", font_scale: -1,
                             color: CrymbleUI::Theme.current.text_default)
-                        sc.enabled = enabled
+                        sc.enabled = item.enabled
                         rows << [b.as(CrymbleUI::Widget), sc.as(CrymbleUI::Widget)]
                     end
                     grid = CrymbleUI::RecursiveGrid.new(content: rows, spacing: 1.0)
@@ -424,7 +414,10 @@ class EmbraceApp < CrymbleUI::App
 
     private def build_shape_panel(shape : ShapeState) : Nil
         shape.update
-        shape.matrix_adapter.try { |a| a.on_data_changed = ->(structural : Bool) { request_rebuild(blocks_input: structural); nil } }
+        shape.matrix_adapter.try do |a|
+            a.on_data_changed = ->(structural : Bool) { request_rebuild(blocks_input: structural); nil }
+            a.on_cell_edit = ->(row : Int32, col : Int32) { cell_edit_started(shape, {row, col}); nil }
+        end
         idx = @shapes.index(shape) || 0
         step = 20.0
         cascade_x = step + step * (idx % 10) + 2 * step * (idx // 10)
@@ -435,7 +428,7 @@ class EmbraceApp < CrymbleUI::App
         panel_width = (ENV["EMBRACE_SHAPE_PANEL_WIDTH"]?.try(&.to_f) || 1100.0)
         panel_height = (ENV["EMBRACE_SHAPE_PANEL_HEIGHT"]?.try(&.to_f) || 750.0)
         window_panel(shape.display_title, x: cascade_x, y: cascade_y, width: panel_width, height: panel_height, id: shape.id) do
-            on_closed { shape.close; @shapes.reject! { |s| !s.open }; request_rebuild }
+            on_closed { close_shape(shape) }
             register_shortcut("Alt+Left") { shape.navigate_history(-1); request_rebuild }
             register_shortcut("Alt+Right") { shape.navigate_history(1); request_rebuild }
 
@@ -447,23 +440,11 @@ class EmbraceApp < CrymbleUI::App
             # type) no-ops cleanly.
             register_shortcut("Ctrl+X") do
                 with_cell_cursor(shape) do |adapter, vm, rc|
-                    if adapter.cell_has_content?(rc[0], rc[1])
-                        @cut_cell = {shape.id, rc[0], rc[1]}
-                        vm.drag_source_cell = {rc[0], rc[1]}
-                        vm.mark_drag_overlay_dirty
-                        request_rebuild
-                    end
+                    arm_cut(shape, rc) if adapter.cell_has_content?(rc[0], rc[1])
                 end
             end
             register_shortcut("Ctrl+V") do
-                with_cell_cursor(shape) do |adapter, vm, rc|
-                    if c = @cut_cell
-                        cell_op(shape) { adapter.cell_move(c[1], c[2], rc[0], rc[1]) }
-                        @cut_cell = nil
-                        vm.drag_source_cell = nil
-                        vm.mark_drag_overlay_dirty
-                    end
-                end
+                with_cell_cursor(shape) { |_adapter, _vm, rc| paste_cut(shape, rc) }
             end
             register_shortcut("Insert") do
                 with_cell_cursor(shape) { |adapter, _vm, rc| cell_op(shape) { adapter.cell_insert(rc) } }
@@ -481,48 +462,53 @@ class EmbraceApp < CrymbleUI::App
             # Shape menubar
             menubar do
                 menu("Edit") do
-                    menu_item("Commit", "^O") { shape.do_commit; set_statusbar_info("Committed"); request_rebuild }
+                    menu_item("Commit", "^O", id: "mi_commit_#{shape.id}") { shape.do_commit; set_statusbar_info("Committed"); request_rebuild }
                     # Scoped id: find_by_id returns the FIRST match, and several Shapes
                     # can be open. The label names the scope too, because the cell
                     # context menu already carries an unrelated "Cut cell"/"Paste cell"
                     # pair that never touches the system clipboard.
-                    menu_item("Copy Shape to clipboard", id: "shape_copy_tsv_#{shape.id}") do
+                    menu_item("Copy Shape to clipboard", id: "mi_copy_tsv_#{shape.id}") do
                         copy_shape_to_clipboard(shape)
                         request_rebuild
                     end
-                    menu_item("Import table...") do
-                        dialog = Dialogs::ImportTable.new("Import table...", "*.xlsx") do |filename, tablename|
+                    # A new table is a Shape act: it lands on THIS Shape's branch (each Shape
+                    # carries its own position; the document has none worth writing on).
+                    # Never greyed on an empty clipboard — the clipboard API has no
+                    # cheap "is there anything?" query, so gating this would mean a
+                    # full fetch on every rebuild. Always enabled, warn on click.
+                    menu_item("Paste clipboard as new table", id: "mi_paste_new_table_#{shape.id}") do
+                        paste_clipboard_as_new_table(shape)
+                        request_rebuild
+                    end
+                    menu_item("Import xlsx sheet as new table...", id: "mi_import_xlsx_#{shape.id}") do
+                        dialog = Dialogs::ImportTable.new("Import xlsx sheet as new table...", "*.xlsx") do |filename, tablename|
                             import_document(shape, filename, tablename)
                             request_rebuild
                         end
                         add_dialog(dialog)
                     end
-                    menu_item("Add record", "^R") { shape.add_record; request_rebuild }
+                    menu_item("Add record", "^R", id: "mi_add_record_#{shape.id}") { shape.add_record; request_rebuild }
                 end
                 menu("View") do
                     # ^M is handled by sfml_renderer — show label only, no shortcut registration
-                    maximize_item = menu_item("(De-)Maximize", "^M")
+                    maximize_item = menu_item("(De-)Maximize", "^M", id: "mi_maximize_#{shape.id}")
                     maximize_item.on_click_action = -> {
                         if panel = root.try(&.find_topmost_panel)
                             panel.toggle_maximize
                         end
                         nil
                     }
-                    menu_item("Duplicate Shape", "^D") do
+                    menu_item("Duplicate Shape", "^D", id: "mi_duplicate_#{shape.id}") do
                         new_shape = shape.dup_shape("Shape")
                         @shapes << new_shape
                         request_rebuild
                     end
-                    menu_item("Close Shape", "^W") do
-                        shape.close
-                        @shapes.reject! { |s| !s.open }
-                        request_rebuild
-                    end
+                    menu_item("Close Shape", "^W", id: "mi_close_#{shape.id}") { close_shape(shape) }
                     # Scoped id: find_by_id returns the FIRST match and several Shapes can be
                     # open, so an unscoped id would toggle whichever one happened to build first.
                     auto_item = menu_item("Auto-size perspective cells",
                                           checked: shape.auto_size_cells,
-                                          id: "auto_size_cells_#{shape.id}") do
+                                          id: "mi_auto_size_#{shape.id}") do
                         shape.auto_size_cells = !shape.auto_size_cells
                         # Announce: the matrix carries its computed sizes across a rebuild, so
                         # without this, unticking would leave them in place.
@@ -570,13 +556,9 @@ class EmbraceApp < CrymbleUI::App
                                 end
                             end
                             tab("Config") do
-                                # Everything scrolls together, history included. That needed the
-                                # changes table to stop being a VirtualMatrix first: a widget
-                                # that owns layers cannot scroll inside a ScrollView, because the
-                                # ScrollView offsets its own cached buffer and a child layer
-                                # never draws into it — which is why the table sat nailed in
-                                # place while its neighbours moved. It is a RecursiveGrid now,
-                                # plain widgets, so one scrollbar serves the whole tab.
+                                # Everything scrolls together, history included, under one
+                                # scrollbar: the changes table is a RecursiveGrid (plain widgets),
+                                # not a VirtualMatrix with a scrollbar of its own.
                                 expanded do
                                     # keep_content_width: this column of controls scrolls
                                     # vertically, so it cannot scroll sideways — without the
@@ -722,14 +704,10 @@ class EmbraceApp < CrymbleUI::App
                         request_rebuild
                     end
                 end
-                # A layer-free grid, deliberately: this used to be a sugared VirtualMatrix, and a
-                # VirtualMatrix OWNS LAYERS. A ScrollView scrolls by offsetting its own cached
-                # buffer, which a child layer never draws into — so inside the Config tab's
-                # scroll area the table sat nailed in place while everything around it moved
-                # ("history table is drawn absolutely"). RecursiveGrid aligns its columns the
-                # same way and is plain widgets, so it scrolls with its neighbours, needs no
-                # scrollbar of its own, and its cells are reachable by `find` instead of only
-                # through the matrix's virtualised active_cells.
+                # A layer-free grid, deliberately: RecursiveGrid aligns its columns like a
+                # VirtualMatrix but is plain widgets, so inside the Config tab's scroll area it
+                # needs no scrollbar of its own and its cells are reachable by `find` instead of
+                # only through the matrix's virtualised active_cells.
                 recursive_grid(id: "changes_#{shape.id}", spacing: 4.0) do
                     rows = [] of Array(CrymbleUI::Widget)
                     rows << ["", "Table", "Records", "Fields", "Cells", ""].map do |h|
@@ -822,6 +800,7 @@ class EmbraceApp < CrymbleUI::App
         with_container(layout) do
             shape.dfs_tree do |node, level|
                 layout.add_node_info(node, level)
+                row_id = "#{shape.id}_#{node.key}" # logical: survives rebuilds, renames, reselects
                 is_draggable = node.drag
                 is_drop_target = !node.is_pseudo_field? && (node.is_table? ? node.is_expandable? : true)
                 captured_node = node
@@ -845,9 +824,9 @@ class EmbraceApp < CrymbleUI::App
                 if is_drop_target && is_draggable
                     dz = drop_zone(accept_types: ["vhtree_field"], on_drop: ->(data : CrymbleUI::DragData, pos : CrymbleUI::Vec2) {
                         handle_vhtree_drop(captured_shape, data, captured_node, pos)
-                    }, background_color: row_bg, id: "dz_#{node.object_id}") do
-                        draggable(data: VHTreeDragData.new(node.as(SimpleVHTreeAdapter)), id: "drag_#{node.object_id}") do
-                            build_vhtree_row_content(shape, node, level)
+                    }, background_color: row_bg, id: "cfg_dz_#{row_id}") do
+                        draggable(data: VHTreeDragData.new(node.as(SimpleVHTreeAdapter)), id: "cfg_drag_#{row_id}") do
+                            build_vhtree_row_content(shape, node, row_id, level)
                         end
                     end
                     dz.on_right_click_handler = right_click
@@ -855,22 +834,22 @@ class EmbraceApp < CrymbleUI::App
                 elsif is_drop_target
                     dz = drop_zone(accept_types: ["vhtree_field"], on_drop: ->(data : CrymbleUI::DragData, pos : CrymbleUI::Vec2) {
                         handle_vhtree_drop(captured_shape, data, captured_node, pos)
-                    }, background_color: row_bg, id: "dz_#{node.object_id}") do
-                        build_vhtree_row_content(shape, node, level)
+                    }, background_color: row_bg, id: "cfg_dz_#{row_id}") do
+                        build_vhtree_row_content(shape, node, row_id, level)
                     end
                     dz.on_right_click_handler = right_click
                     dz.hover_text = hover
                 elsif is_draggable
-                    dz = drop_zone(accept_types: [] of String, background_color: row_bg, id: "dz_#{node.object_id}") do
-                        draggable(data: VHTreeDragData.new(node.as(SimpleVHTreeAdapter)), id: "drag_#{node.object_id}") do
-                            build_vhtree_row_content(shape, node, level)
+                    dz = drop_zone(accept_types: [] of String, background_color: row_bg, id: "cfg_dz_#{row_id}") do
+                        draggable(data: VHTreeDragData.new(node.as(SimpleVHTreeAdapter)), id: "cfg_drag_#{row_id}") do
+                            build_vhtree_row_content(shape, node, row_id, level)
                         end
                     end
                     dz.on_right_click_handler = right_click
                     dz.hover_text = hover
                 else
-                    dz = drop_zone(accept_types: [] of String, background_color: row_bg, id: "dz_#{node.object_id}") do
-                        build_vhtree_row_content(shape, node, level)
+                    dz = drop_zone(accept_types: [] of String, background_color: row_bg, id: "cfg_dz_#{row_id}") do
+                        build_vhtree_row_content(shape, node, row_id, level)
                     end
                     dz.on_right_click_handler = right_click
                     dz.hover_text = hover
@@ -881,7 +860,8 @@ class EmbraceApp < CrymbleUI::App
 
     VHTREE_BTN_PAD = 2.0
 
-    private def build_vhtree_row_content(shape : ShapeState, node : Interface::GUI::VHTreeAdapter, level : Int32 = 0) : Nil
+    # `row_id`: the row's logical id suffix, computed once per row by build_vhtree.
+    private def build_vhtree_row_content(shape : ShapeState, node : Interface::GUI::VHTreeAdapter, row_id : String, level : Int32 = 0) : Nil
         selectable = node.is_selectable?
         selected = node.is_selected?
         is_sel = (selected == true || selected == Some)
@@ -904,7 +884,7 @@ class EmbraceApp < CrymbleUI::App
                     button(arrow_char, padding: VHTREE_BTN_PAD,
                         text_color: text_color,
                         background_color: row_bg, border_color: row_bg,
-                        id: "exp_#{node.object_id}") do
+                        id: "cfg_exp_#{row_id}") do
                         node.toggle_expand
                         shape.update(true)
                         request_rebuild
@@ -914,13 +894,13 @@ class EmbraceApp < CrymbleUI::App
                     button(" ", padding: VHTREE_BTN_PAD,
                         text_color: row_bg,
                         background_color: row_bg, border_color: row_bg,
-                        id: "spc_#{node.object_id}") do
+                        id: "cfg_spc_#{row_id}") do
                     end
                 end
             end
 
             # Selection checkbox (always shown; disabled when not selectable)
-            cb = checkbox("", state: check_state, id: "sel_#{node.object_id}") do
+            cb = checkbox("", state: check_state, id: "cfg_sel_#{row_id}") do
                 node.toggle_select
                 shape.update(true)
                 request_rebuild
@@ -940,7 +920,7 @@ class EmbraceApp < CrymbleUI::App
                     text_color: text_color,
                     text_align: CrymbleUI::TextAlign::Left,
                     background_color: row_bg, border_color: row_bg,
-                    id: "name_#{node.object_id}") do
+                    id: "cfg_name_#{row_id}") do
                     if selectable
                         node.toggle_select
                         shape.update(true)
@@ -954,7 +934,7 @@ class EmbraceApp < CrymbleUI::App
                 button(texts[2], padding: VHTREE_BTN_PAD,
                     text_color: text_color,
                     background_color: row_bg, border_color: row_bg,
-                    id: "links_#{node.object_id}") do
+                    id: "cfg_links_#{row_id}") do
                     if node.is_expandable?
                         node.toggle_expand
                         shape.update(true)
@@ -1184,10 +1164,9 @@ class EmbraceApp < CrymbleUI::App
                 # offered; a column the mode measures still refuses, because that drag really
                 # would be overwritten. `interactive_resize` stays what it always was: a hard
                 # veto for a consumer that wants no resizing at all.
-                # Restore cut highlight from @cut_cell (survives rebuild)
-                if (cc = @cut_cell) && cc[0] == shape.id
-                    vm.as(CrymbleUI::VirtualMatrix).drag_source_cell = {cc[1], cc[2]}
-                    vm.as(CrymbleUI::VirtualMatrix).drag_source_was_preexisting = true
+                # The cut marker survives the rebuild - while the cut still holds (live_cut! ends a stale one)
+                if cut_cell = live_cut!(shape)
+                    vm.as(CrymbleUI::VirtualMatrix).drag_source_cell = cut_cell
                 end
                 vm.on_right_click_handler = ->(pos : CrymbleUI::Vec2) {
                     show_cell_context_menu(captured_shape, pos)
@@ -1340,6 +1319,8 @@ class EmbraceApp < CrymbleUI::App
             CrymbleUI::Widget.scheduler.cancel(old_tid)
         end
 
+        show_statusbar_priority # now - not at the timer's first tick, a second later, or at an unrelated rebuild
+
         # Schedule countdown via global scheduler (wakes SFML event loop)
         @statusbar_timer_id = CrymbleUI::Widget.scheduler.schedule(Time::Span.new(seconds: 1), repeating: true) do
             @statusbar_priority_remaining -= 1
@@ -1351,16 +1332,19 @@ class EmbraceApp < CrymbleUI::App
                     @statusbar_timer_id = nil
                 end
             end
-            # Update statusbar widget directly (render-only, no rebuild)
-            if sb = find("statusbar").as?(CrymbleUI::StatusBar)
-                if @statusbar_priority_remaining > 0
-                    sb.text = "(#{@statusbar_priority_remaining}) #{@statusbar_priority_text}"
-                    sb.text_color = @statusbar_color
-                else
-                    sb.text = ""
-                    sb.text_color = CrymbleUI::Theme.current.statusbar_text
-                end
-            end
+            show_statusbar_priority
+        end
+    end
+
+    # Update the statusbar widget directly (render-only, no rebuild)
+    private def show_statusbar_priority : Nil
+        return unless sb = find("statusbar").as?(CrymbleUI::StatusBar)
+        if @statusbar_priority_remaining > 0
+            sb.text = "(#{@statusbar_priority_remaining}) #{@statusbar_priority_text}"
+            sb.text_color = @statusbar_color
+        else
+            sb.text = ""
+            sb.text_color = CrymbleUI::Theme.current.statusbar_text
         end
     end
 

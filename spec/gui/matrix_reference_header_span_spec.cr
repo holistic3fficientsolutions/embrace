@@ -5,6 +5,7 @@ require "../../src/gui/cell"
 require "../../src/debug-helper"
 require "../../src/constants"
 require "crymble-ui/testing/test_renderer"
+require "./support/fixtures"
 
 include Persistency
 
@@ -17,11 +18,7 @@ include Persistency
 # Groups of sizes 1..4 so we can compare span-1 vs span-3 header heights.
 
 private def make_value_app : EmbraceApp
-  app = EmbraceApp.new
-  persistency = app.persistency
-  hash = Hash(String, FieldLID | TableLID | RecordLID).new
-  help = TableReader(Persistency::Default, Persistency::Cell).new(persistency, hash)
-  help << <<-EOT
+  Fixtures.app(<<-EOT, title: "S")[0]
       Tasks
       Name | Project | ID
       Alice | Alpha | 1
@@ -35,15 +32,10 @@ private def make_value_app : EmbraceApp
       Bob | Delta | 9
       Bob | Delta | 10
   EOT
-  add_shape(app, hash["Tasks"].as(TableLID))
 end
 
 private def make_ref_app : EmbraceApp
-  app = EmbraceApp.new
-  persistency = app.persistency
-  hash = Hash(String, FieldLID | TableLID | RecordLID).new
-  help = TableReader(Persistency::Default, Persistency::Cell).new(persistency, hash)
-  help << <<-EOT
+  Fixtures.app(<<-EOT, open: "Base", title: "S")[0]
       Projects
       Project
       Alpha
@@ -64,39 +56,12 @@ private def make_ref_app : EmbraceApp
       Bob | Delta | 9
       Bob | Delta | 10
   EOT
-  add_shape(app, hash["Base"].as(TableLID))
-end
-
-private def add_shape(app : EmbraceApp, table_lid : TableLID) : EmbraceApp
-  app.shapes.clear
-  ctx = app.persistency.context.clone
-  app.shapes << ShapeState.new("S", app.persistency, ctx, table_lid)
-  app.request_rebuild
-  app
-end
-
-private def configure_rows(shape : ShapeState, levels : Hash(String, Int32))
-  fl = shape.fieldlist.not_nil!
-  _ = fl.size
-  unused = Table::Lazy::Pivot::Classes::Unused.value.to_i64
-  row_class = Table::Lazy::Pivot::Classes::Row.value.to_i64
-  class_col = Table::Lazy::Fieldlist::ColumnIndices::Class.value
-  name_col = Table::Lazy::Fieldlist::ColumnIndices::Name.value
-  level_col = Table::Lazy::Fieldlist::ColumnIndices::Level.value
-  (0...fl.size[0]).each { |ri| fl[[ri, class_col]] = unused }
-  levels.each do |name, level|
-    ri = (0...fl.size[0]).find { |r| fl[[r, name_col]] == name }
-    next unless ri
-    fl[[ri, class_col]] = row_class
-    fl[[ri, level_col]] = level.to_i64
-  end
-  shape.matrix_adapter.not_nil!.invalidate_all!
 end
 
 # {span => live VirtualMatrix widget height} for each distinct Project (L1) group.
 private def project_header_heights(app : EmbraceApp) : Hash(Int32, Float64)
   shape = app.shapes.first
-  configure_rows(shape, {"Name" => 0, "Project" => 1, "ID" => 2})
+  Fixtures.pivot(shape, {"Name" => 0, "Project" => 1, "ID" => 2})
   renderer = CrymbleUI::Testing::TestRenderer.new(1200, 800)
   renderer.settle_rendering(app)
   adapter = shape.matrix_adapter.not_nil!

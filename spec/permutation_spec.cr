@@ -1,14 +1,12 @@
 require "spec"
 require "../src/permutation"
 
-class Array(T)
-    def move(i, j) # just for the tests below
-        if i != j
-            el = self[i]
-            insert(j, el)
-            i += 1 if i > j # if backward move
-            delete_at(i)
-        end
+private def move(arr, i, j) # the move the tests below replay - file-private, not a method on every Array
+    if i != j
+        el = arr[i]
+        arr.insert(j, el)
+        i += 1 if i > j # if backward move
+        arr.delete_at(i)
     end
 end
 
@@ -38,15 +36,15 @@ describe Permutation do
         p.swap(0, 4)
         p.size.should eq(5)
         arr = %w(one two three four five)
-        p.apply_with_move {|x,y| arr.move(x, y)}
+        p.apply_with_move {|x,y| move(arr, x, y)}
         arr.should eq(%w(five four one two three))
         p.invert!
-        p.apply_with_move {|x,y| arr.move(x, y)}
+        p.apply_with_move {|x,y| move(arr, x, y)}
         arr.should eq(%w(one two three four five))
-        p.apply_with_move {|x,y| arr.move(x, y)}
+        p.apply_with_move {|x,y| move(arr, x, y)}
         arr.should eq(%w(three four five two one))
         p.invert!
-        p.apply_with_move {|x,y| arr.move(x, y)}
+        p.apply_with_move {|x,y| move(arr, x, y)}
         arr.should eq(%w(one two three four five))
     end
     it "initialization with old2new list" do

@@ -5,6 +5,7 @@ require "../../src/debug-helper"
 require "../../src/constants"
 require "crymble-ui/testing/test_renderer"
 require "crymble-ui/testing/keys"
+require "./support/fixtures"
 
 include Persistency
 
@@ -26,17 +27,9 @@ private alias Keys = CrymbleUI::Testing::Keys
 
 # Four fields and `records` empty records; the grid shows Rank as its first column.
 private def make_app(records : Int32) : {EmbraceApp, CrymbleUI::Testing::TestRenderer}
-    app = EmbraceApp.new
-    p = app.persistency
-    hash = Hash(String, FieldLID | TableLID | RecordLID).new
     rows = Array.new(records) { " |  |  | " }
-    TableReader(Persistency::Default, Persistency::Cell).new(p, hash) << (["T", "a | b | c | d"] + rows).join("\n")
-    app.shapes.clear
-    app.shapes << ShapeState.new("T", p, p.context.clone, hash["T"].as(TableLID))
-    app.request_rebuild
-    renderer = CrymbleUI::Testing::TestRenderer.new(1200, 800)
-    renderer.settle_rendering(app)
-    {app, renderer}
+    app = Fixtures.app((["T", "a | b | c | d"] + rows).join("\n"))[0]
+    {app, Fixtures.renderer(app)}
 end
 
 private def matrix(app : EmbraceApp) : CrymbleUI::VirtualMatrix

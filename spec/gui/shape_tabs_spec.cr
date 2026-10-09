@@ -5,6 +5,7 @@ require "../../src/gui/cell"
 require "../../src/debug-helper"
 require "../../src/constants"
 require "crymble-ui/testing/test_renderer"
+require "./support/fixtures"
 
 include Persistency
 
@@ -19,25 +20,17 @@ include Persistency
 # outside the tabs either way: it is navigation, and its effect on the perspective is as
 # immediate as the configurator's.
 private def make_app : Tuple(EmbraceApp, CrymbleUI::Testing::TestRenderer)
-    app = EmbraceApp.new
-    p = app.persistency
-    hash = Hash(String, FieldLID | TableLID | RecordLID).new
-    TableReader(Persistency::Default, Persistency::Cell).new(p, hash) << <<-EOT
+    app = Fixtures.app(<<-EOT, title: "N")[0]
         Notes
         Name | Body
         Al | alpha
         Bo | beta
     EOT
-    app.shapes.clear
-    app.shapes << ShapeState.new("N", p, p.context.clone, hash["Notes"].as(TableLID))
-    app.request_rebuild
-    renderer = CrymbleUI::Testing::TestRenderer.new(1200, 800)
-    renderer.settle_rendering(app)
-    {app, renderer}
+    {app, Fixtures.renderer(app)}
 end
 
 private def toggle_tabs(app, renderer)
-    app.find("shape_config_one_page").not_nil!.as(CrymbleUI::MenuItem).trigger_click
+    app.find("mi_view_one_page").not_nil!.as(CrymbleUI::MenuItem).trigger_click
     renderer.settle_rendering(app)
 end
 

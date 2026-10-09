@@ -5,6 +5,7 @@ require "../../src/gui/cell"
 require "../../src/debug-helper"
 require "../../src/constants"
 require "crymble-ui/testing/test_renderer"
+require "./support/fixtures"
 
 include Persistency
 
@@ -15,29 +16,19 @@ include Persistency
 # global and other core specs are written against the zero-width measurement.
 
 private def make_sized_app : EmbraceApp
-    app = EmbraceApp.new
-    p = app.persistency
-    hash = Hash(String, FieldLID | TableLID | RecordLID).new
-    TableReader(Persistency::Default, Persistency::Cell).new(p, hash) << <<-EOT
+    Fixtures.app(<<-EOT, title: "N")[0]
         Notes
         Name | Body
         Al | a considerably longer value than the others
         Bo | b
     EOT
-    app.shapes.clear
-    app.shapes << ShapeState.new("N", p, p.context.clone, hash["Notes"].as(TableLID))
-    app.request_rebuild
-    app
 end
 
 # The shape of the field report: THREE data fields, the first empty, a long value in the
 # second, a short one in the third — and values present on some rows only. The two-field fixture
 # above never produced a third column, which is where the header drift was visible.
 private def make_field_report_app : EmbraceApp
-    app = EmbraceApp.new
-    p = app.persistency
-    hash = Hash(String, FieldLID | TableLID | RecordLID).new
-    TableReader(Persistency::Default, Persistency::Cell).new(p, hash) << <<-EOT
+    Fixtures.app(<<-EOT, title: "F")[0]
         Sheet
         c1 | c2 | c3
         1 | ahjh wjdj wjdjw jdjw | 
@@ -45,24 +36,10 @@ private def make_field_report_app : EmbraceApp
         3 |  | 
         4 |  | 
     EOT
-    app.shapes.clear
-    app.shapes << ShapeState.new("F", p, p.context.clone, hash["Sheet"].as(TableLID))
-    app.request_rebuild
-    app
 end
 
 private def toggle_id(shape) : String
-    "auto_size_cells_#{shape.id}"
-end
-
-private def data_cell(adapter, want : String) : Tuple(Int32, Int32)?
-    rows, cols = adapter.get_scrollorder
-    rows.each do |r|
-        cols.each do |c|
-            return {r, c} if adapter.cell_read({r, c}).to_s == want
-        end
-    end
-    nil
+    "mi_auto_size_#{shape.id}"
 end
 
 describe "auto-size perspective cells" do
@@ -169,7 +146,7 @@ describe "auto-size perspective cells" do
         renderer.settle_rendering(app)
         shape = app.shapes.first
         adapter = shape.matrix_adapter.not_nil!
-        rc = data_cell(adapter, "a considerably longer value than the others").not_nil!
+        rc = Fixtures.cell_showing(adapter, "a considerably longer value than the others")
         before = adapter.virtual_matrix.not_nil!.active_cells[rc].bounds.width
 
         app.find(toggle_id(shape)).not_nil!.as(CrymbleUI::MenuItem).trigger_click
@@ -201,7 +178,7 @@ describe "auto-size perspective cells" do
         app.find(toggle_id(shape)).not_nil!.as(CrymbleUI::MenuItem).trigger_click
         renderer.settle_rendering(app)
 
-        rc = data_cell(adapter, "b").not_nil!
+        rc = Fixtures.cell_showing(adapter, "b")
         before = adapter.virtual_matrix.not_nil!.active_cells[rc].bounds.width
 
         vm = adapter.virtual_matrix.not_nil!
@@ -229,7 +206,7 @@ describe "auto-size perspective cells" do
         app.find(toggle_id(shape)).not_nil!.as(CrymbleUI::MenuItem).trigger_click
         renderer.settle_rendering(app)
 
-        rc = data_cell(adapter, "b").not_nil!
+        rc = Fixtures.cell_showing(adapter, "b")
         before = adapter.virtual_matrix.not_nil!.active_cells[rc].bounds.height
 
         vm = adapter.virtual_matrix.not_nil!
@@ -260,7 +237,7 @@ describe "auto-size perspective cells" do
         app.find(toggle_id(shape)).not_nil!.as(CrymbleUI::MenuItem).trigger_click
         renderer.settle_rendering(app)
 
-        rc = data_cell(adapter, "a considerably longer value than the others").not_nil!
+        rc = Fixtures.cell_showing(adapter, "a considerably longer value than the others")
         before = adapter.virtual_matrix.not_nil!.active_cells[rc].bounds.width
 
         vm = adapter.virtual_matrix.not_nil!
@@ -285,7 +262,7 @@ describe "auto-size perspective cells" do
         app.find(toggle_id(shape)).not_nil!.as(CrymbleUI::MenuItem).trigger_click
         renderer.settle_rendering(app)
 
-        rc = data_cell(adapter, "b").not_nil!
+        rc = Fixtures.cell_showing(adapter, "b")
         before = adapter.virtual_matrix.not_nil!.active_cells[rc].bounds.width
 
         vm = adapter.virtual_matrix.not_nil!
@@ -312,7 +289,7 @@ describe "auto-size perspective cells" do
         app.find(toggle_id(shape)).not_nil!.as(CrymbleUI::MenuItem).trigger_click
         renderer.settle_rendering(app)
 
-        rc = data_cell(adapter, "b").not_nil!
+        rc = Fixtures.cell_showing(adapter, "b")
 
         # Two commits, each wider than the last, so stepping back lands on REAL content whose
         # width is known — not on the degenerate empty state before the table existed.
@@ -417,7 +394,7 @@ describe "auto-size perspective cells" do
         renderer.settle_rendering(app)
         shape = app.shapes.first
         adapter = shape.matrix_adapter.not_nil!
-        rc = data_cell(adapter, "a considerably longer value than the others").not_nil!
+        rc = Fixtures.cell_showing(adapter, "a considerably longer value than the others")
         vm = adapter.virtual_matrix.not_nil!
         height_before = vm.active_cells[rc].bounds.height
         width_before = vm.active_cells[rc].bounds.width
@@ -442,7 +419,7 @@ describe "auto-size perspective cells" do
         renderer.settle_rendering(app)
 
         live = adapter.virtual_matrix.not_nil!
-        rc = data_cell(adapter, "b").not_nil!
+        rc = Fixtures.cell_showing(adapter, "b")
         before = live.active_cells[rc].bounds.width
         live.set_cursor_from_cell(rc)
         live.on_text_input('W')
@@ -478,7 +455,7 @@ describe "auto-size perspective cells" do
         app.find(toggle_id(shape)).not_nil!.as(CrymbleUI::MenuItem).trigger_click
         renderer.settle_rendering(app)
 
-        rc = data_cell(adapter, "b").not_nil!
+        rc = Fixtures.cell_showing(adapter, "b")
 
         # Session one: 60 characters clear the 42-character sibling in this column, so the edited
         # cell alone decides the width and one backspace has to be visible.
@@ -521,7 +498,7 @@ describe "auto-size perspective cells" do
         app.find(toggle_id(shape)).not_nil!.as(CrymbleUI::MenuItem).trigger_click
         renderer.settle_rendering(app)
 
-        rc = data_cell(adapter, "b").not_nil!
+        rc = Fixtures.cell_showing(adapter, "b")
 
         # Commit one edit first: the defect needs a rebuild to exist at all.
         vm = adapter.virtual_matrix.not_nil!
@@ -557,7 +534,7 @@ describe "auto-size perspective cells" do
         app.find(toggle_id(shape)).not_nil!.as(CrymbleUI::MenuItem).trigger_click
         renderer.settle_rendering(app)
 
-        rc = data_cell(adapter, "b").not_nil!
+        rc = Fixtures.cell_showing(adapter, "b")
 
         vm = adapter.virtual_matrix.not_nil!
         vm.set_cursor_from_cell(rc)
@@ -597,7 +574,7 @@ describe "auto-size perspective cells" do
         renderer.settle_rendering(app)
 
         live = adapter.virtual_matrix.not_nil!
-        rc = data_cell(adapter, "b").not_nil!
+        rc = Fixtures.cell_showing(adapter, "b")
         before = live.active_cells[rc].bounds.height
         live.set_cursor_from_cell(rc)
         live.on_text_input('x')
@@ -749,20 +726,13 @@ describe "auto-size perspective cells" do
     # strip leaves the ink-placement band empty, so `place_ink` pushed each value to its cell's
     # bottom edge to keep it "visible".
     it "keeps a short cell's value put when the record below it is deleted" do
-        app = EmbraceApp.new
-        p = app.persistency
-        hash = Hash(String, FieldLID | TableLID | RecordLID).new
-        TableReader(Persistency::Default, Persistency::Cell).new(p, hash) << <<-EOT
+        app = Fixtures.app(<<-EOT, title: "S")[0]
             Sheet
             c1 | c2
             1 | a
             2 | b
         EOT
-        app.shapes.clear
-        app.shapes << ShapeState.new("S", p, p.context.clone, hash["Sheet"].as(TableLID))
-        app.request_rebuild
-        renderer = CrymbleUI::Testing::TestRenderer.new(1200, 800)
-        renderer.settle_rendering(app)
+        renderer = Fixtures.renderer(app)
         shape = app.shapes.first
         adapter = shape.matrix_adapter.not_nil!
         app.find(toggle_id(shape)).not_nil!.as(CrymbleUI::MenuItem).trigger_click
@@ -812,10 +782,7 @@ describe "auto-size perspective cells" do
     # `cell_assign_reference` - so no path re-fitted the line after the write. The full sweep
     # measures it correctly, which is exactly why the toggle looked like a cure.
     it "widens the column when a reference cell is pointed at a longer value" do
-        app = EmbraceApp.new
-        p = app.persistency
-        hash = Hash(String, FieldLID | TableLID | RecordLID).new
-        TableReader(Persistency::Default, Persistency::Cell).new(p, hash) << <<-EOT
+        app = Fixtures.app(<<-EOT, open: "Persons", title: "P")[0]
             Cities
             City
             Rome
@@ -825,11 +792,7 @@ describe "auto-size perspective cells" do
             Person | City_City
             Alan | Rome
         EOT
-        app.shapes.clear
-        app.shapes << ShapeState.new("P", p, p.context.clone, hash["Persons"].as(TableLID))
-        app.request_rebuild
-        renderer = CrymbleUI::Testing::TestRenderer.new(1200, 800)
-        renderer.settle_rendering(app)
+        renderer = Fixtures.renderer(app)
         shape = app.shapes.first
         adapter = shape.matrix_adapter.not_nil!
         app.find(toggle_id(shape)).not_nil!.as(CrymbleUI::MenuItem).trigger_click

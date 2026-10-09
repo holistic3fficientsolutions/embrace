@@ -3,6 +3,7 @@ require "../../spec/spec_helper"
 require "../../src/gui/embrace"
 require "../../src/constants"
 require "crymble-ui/testing/test_renderer"
+require "./support/fixtures"
 
 include Persistency
 
@@ -15,10 +16,7 @@ include Persistency
 # real SFML RenderTexture goes blank, so a pixel assertion is a false green here.
 
 private def make_demo_app : EmbraceApp
-  app = EmbraceApp.new
-  hash = Hash(String, FieldLID | TableLID | RecordLID).new
-  help = TableReader(Persistency::Default, Persistency::Cell).new(app.persistency, hash)
-  help << <<-EOT
+  Fixtures.app(<<-EOT, open: "Allocations", title: "Shape")[0]
       Cities
       City | Country
       Arizona | USA
@@ -52,10 +50,6 @@ private def make_demo_app : EmbraceApp
       Samwise | Former | Peace | 100
       Melanie | Future | Survival | 100
   EOT
-  app.shapes.clear
-  app.shapes << ShapeState.new("Shape", app.persistency, app.persistency.context.clone, hash["Allocations"].as(TableLID))
-  app.request_rebuild
-  app
 end
 
 describe "Perspective survives collapse + re-expand of its section" do

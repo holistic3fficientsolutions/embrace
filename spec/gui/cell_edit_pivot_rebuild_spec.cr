@@ -5,6 +5,7 @@ require "../../src/gui/cell"
 require "../../src/debug-helper"
 require "../../src/constants"
 require "crymble-ui/testing/test_renderer"
+require "./support/fixtures"
 
 include Persistency
 
@@ -28,10 +29,7 @@ include Persistency
 # Counted, not timed, on purpose: the rebuild COUNT is exactly what the row count multiplies, so
 # the assertion is machine-independent and cannot flake — and it stays true at any table size.
 private def make_edit_app : Tuple(EmbraceApp, CrymbleUI::Testing::TestRenderer)
-    app = EmbraceApp.new
-    p = app.persistency
-    hash = Hash(String, FieldLID | TableLID | RecordLID).new
-    TableReader(Persistency::Default, Persistency::Cell).new(p, hash) << <<-EOT
+    app = Fixtures.app(<<-EOT, title: "N")[0]
         Notes
         Name | Body
         Al | alpha
@@ -39,12 +37,7 @@ private def make_edit_app : Tuple(EmbraceApp, CrymbleUI::Testing::TestRenderer)
         Cy | gamma
         Di | delta
     EOT
-    app.shapes.clear
-    app.shapes << ShapeState.new("N", p, p.context.clone, hash["Notes"].as(TableLID))
-    app.request_rebuild
-    renderer = CrymbleUI::Testing::TestRenderer.new(1200, 600)
-    renderer.settle_rendering(app)
-    {app, renderer}
+    {app, Fixtures.renderer(app, 1200, 600)}
 end
 
 # Put the cursor on a data cell and open its editor by typing one character, the way the user

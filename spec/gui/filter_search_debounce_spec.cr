@@ -3,6 +3,7 @@ require "../../spec/spec_helper"
 require "../../src/gui/embrace"
 require "../../src/constants"
 require "crymble-ui/testing/test_renderer"
+require "./support/fixtures"
 
 include Persistency
 
@@ -12,23 +13,15 @@ include Persistency
 # later isn't asserted: there's no headless scheduler-advance; the "no immediate rebuild" property is
 # what removes the freeze, and it's what regresses if someone reverts the debounce to request_rebuild.)
 private def make_filtered_app : EmbraceApp
-  app = EmbraceApp.new
-  persistency = app.persistency
-  hash = Hash(String, FieldLID | TableLID | RecordLID).new
-  help = TableReader(Persistency::Default, Persistency::Cell).new(persistency, hash)
-  help << <<-EOT
+  app = Fixtures.app(<<-EOT)[0]
     T
     A | B
     north | widget
     south | gadget
     east | widget
   EOT
-  t_lid = hash["T"].as(TableLID)
-  app.shapes.clear
-  shape = ShapeState.new("T", persistency, persistency.context.clone, t_lid)
-  app.shapes << shape
+  shape = app.shapes.first
   shape.filter_add(0, Set{"north".as(Cell)}) # activate a filter → the search box appears
-  app.request_rebuild
   app
 end
 

@@ -4,6 +4,7 @@ require "../../src/gui/embrace"
 require "../../src/debug-helper"
 require "../../src/constants"
 require "crymble-ui/testing/test_renderer"
+require "./support/fixtures"
 
 include Persistency
 
@@ -16,15 +17,12 @@ include Persistency
 # The bug: the last visible row's first data cell (c1 = Rank) renders BLANK
 # while all other rank cells show their values.
 
-# Replicates do_newfile_demo (src/gui/embrace_file_ops.cr:80) verbatim, so
-# the persistency state matches what the user sees. Returns the Allocations
+# The demo document's data (do_newfile_demo, src/gui/embrace_file_ops.cr) as it was when this was
+# reported, so the persistency state matches what the user saw - the shipped demo has since corrected
+# "Loyality" to "Loyalty", which sorts the same and plays no part here. Returns the Allocations
 # TableLID so the test can select it as the primary Shape table.
 private def make_demo_app : {EmbraceApp, TableLID}
-    app = EmbraceApp.new
-    persistency = app.persistency
-    hash = Hash(String, FieldLID | TableLID | RecordLID).new
-    help = TableReader(Persistency::Default, Persistency::Cell).new(persistency, hash)
-    help << <<-EOT
+    app, lids = Fixtures.app(<<-EOT, open: "Allocations")
         Cities
         City | Country
         Arizona | USA
@@ -95,12 +93,7 @@ private def make_demo_app : {EmbraceApp, TableLID}
         Riley | Present | Arts | 100
         Amanita | Present | Arts | 100
     EOT
-    alloc_lid = hash["Allocations"].as(TableLID)
-    app.shapes.clear
-    ctx = persistency.context.clone
-    app.shapes << ShapeState.new("Allocations", persistency, ctx, alloc_lid)
-    app.request_rebuild
-    {app, alloc_lid}
+    {app, lids["Allocations"].as(TableLID)}
 end
 
 private def scroll_perspective_down(app : EmbraceApp, ticks : Int32, delta : Float64 = -1.0) : Nil
@@ -129,14 +122,6 @@ private def scroll_perspective_up(app : EmbraceApp, ticks : Int32, delta : Float
     end
 end
 
-private def click_widget(app : EmbraceApp, id : String) : Nil
-    w = app.find(id) || raise "Widget '#{id}' not found"
-    bounds = w.absolute_bounds
-    center = CrymbleUI::Vec2.new(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2)
-    app.handle_mouse_down(center)
-    app.handle_mouse_up(center)
-end
-
 # Drive the filter flow the user's way: click the "Project" filter-add
 # button, type "c" into the search input, then click the Curiosity
 # checkbox to deselect. All via the full event path (not direct APIs) so
@@ -149,12 +134,12 @@ private def apply_projects_minus_curiosity(app : EmbraceApp, renderer : CrymbleU
     # Step 0: expand the "Filter" tree_node (collapsed by default) — the
     # user's "expand filter" step. Without this, the filter_add buttons
     # aren't rendered yet.
-    click_widget(app, "filter_#{shape.id}")
+    Fixtures.click(app, "filter_#{shape.id}")
     renderer.settle_rendering(app)
 
     # Step 1: click the "Project" button in the "Add filter" row.
     filter_add_id = "filter_add_#{project_col}_#{shape.id}"
-    click_widget(app, filter_add_id)
+    Fixtures.click(app, filter_add_id)
     renderer.settle_rendering(app)
 
     # Step 2: focus the search input and type "c" one character at a time
@@ -177,7 +162,7 @@ private def apply_projects_minus_curiosity(app : EmbraceApp, renderer : CrymbleU
     end
     raise "Curiosity value not found" if curiosity.nil?
     curiosity_id = "filter_value_#{project_col}_#{curiosity.hash}_#{shape.id}"
-    click_widget(app, curiosity_id)
+    Fixtures.click(app, curiosity_id)
     renderer.settle_rendering(app)
 end
 

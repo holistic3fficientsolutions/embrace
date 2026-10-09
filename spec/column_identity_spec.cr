@@ -5,6 +5,8 @@ require "../src/table/pivot"
 require "../src/persistency"
 require "../src/virtualtable"
 
+include Persistency
+
 # Column identity has ONE currency: the Configurator's stable user column id — the ids
 # hyperplane_get_ids returns in bulk, the ids the fieldlist persists in its Column values.
 # hyperplane_get_id (per cell) must return THAT id, and column_identity must resolve THAT id.

@@ -61,7 +61,9 @@ module Table::Lazy::Filter
         end
 
         private def update
-            return if @version == @raw.version
+            # Held while a multiassign is open, like every gate - but only once computed: a Filtered
+            # first read inside one still derives its selection (the raw version cannot move there).
+            return if @version && (is_multiassign? || @version == @raw.version)
             @selection = compute_selection
             @version = @raw.version
         end

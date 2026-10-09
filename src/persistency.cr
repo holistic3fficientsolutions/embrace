@@ -107,6 +107,14 @@ class Context
         @version += 1
         @metadata_root_commit = commit
     end
+    # Back to `other`'s commit position (a rollback). Through the setters, so the version moves forward;
+    # current_commit before metadata_commit - its setter re-syncs metadata_commit, which is then set on its own.
+    def restore_position(other : Context) : Nil
+        self.root_commit = other.root_commit
+        self.current_commit = other.current_commit
+        self.metadata_root_commit = other.metadata_root_commit
+        self.metadata_commit = other.metadata_commit
+    end
 end
 
 # we use a context stack in order to allow simple Persistency access without passing contexts with every method
@@ -180,22 +188,20 @@ module Interface::Persistency::Backend(T)
         @context_stack.top = context
     end
 
-    # READ on another context's behalf, and leave the stack as you found it - RAISE OR NOT.
+    # Read or write on another context's behalf, and leave the stack as you found it - RAISE OR NOT.
     #
     # The pop belongs in an `ensure`, because the alternative is silent and permanent: a raise
     # inside the block leaves the stack one frame deeper for the rest of the session, and every
-    # later read on the base context then answers from the wrong path. Found on main in the
-    # pending-changes summary (gui/embrace.cr), which popped on the normal path only.
-    #
-    # DISCARDS the popped context, so this is for reads. A site that KEEPS it
-    # (`shape.context = persistency.contexts.pop` - several do, deliberately) is not this shape
-    # and must not be converted to it.
+    # later read then answers from the wrong commit. So this is how a context is switched - the only
+    # way. A writer never needs the popped context back: it is the very object pushed, which the
+    # ensure asserts.
+    # Returns the block's value.
     def with_context(context : Context, &)
         @context_stack.push(context)
         begin
             yield
         ensure
-            @context_stack.pop
+            assert(@context_stack.pop.same?(context)) # nothing replaced the top meanwhile (ContextStack#top=)
         end
     end
     def version : Int32
@@ -203,6 +209,13 @@ module Interface::Persistency::Backend(T)
     end
     def meta_version : Int32
         @meta_version
+    end
+    # What a cache keys on when it reads through `context`: any write, or only metadata - plus that context's moves.
+    def version_in(context : Context) : Int32
+        @version + context.version
+    end
+    def meta_version_in(context : Context) : Int32
+        @meta_version + context.version
     end
     # a predefined shorthand (based on #get_ancestors); inefficient, but will be overloaded in higher level
     protected def get_successor(lid : RecordLID, last_lid : RecordLID) : RecordLID?
@@ -321,19 +334,26 @@ class Persistency::Backend::Memory(T)
         lid = get_new_lid
         @field2record2commit2value[MetaFieldLIDs::RootCommit][lid][MetaFieldLIDs::RootCommit] = context.current_commit
         @version += 1
+        @meta_version += 1 # the commit graph is metadata (field 0, which set_value's `< 0` would not count)
         context.metadata_commit = context.current_commit = lid
     end
-    def transaction(&) : Nil # poor man's transaction: clone → yield → on raise, restore the clone + re-raise.
-        # Rolls back DATA only. Subclass cache ivars are re-DEFAULTED (empty) by the clone ctor, not
-        # deep-copied — safe because they lazily rebuild. Context OBJECTS and the ContextStack are SHARED
-        # (shallow dup), so context STATE (e.g. current_commit after close_and_add_commit) is NOT rolled
-        # back: a caller that mutates the commit must operate on a throwaway context dup (see #import's
-        # GUI site, import_document).
+    # All or nothing: on a raise the data, and the commit position of the context the operation ran in, are as
+    # they were - by restoring a clone (subclass cache ivars come back re-DEFAULTED, empty, and rebuild lazily).
+    # The version counters do NOT go back: they move past every value reached inside, so a cache that refreshed
+    # in the failed operation never meets the same number again for different contents. (A refused operation
+    # therefore counts as a change for the unsaved-changes guard - accepted.)
+    def transaction(&) : Nil
         safe_state = clone
+        ctx = context
+        position = ctx.clone
         begin
             yield
         rescue ex
+            version, meta_version = @version, @meta_version # the high-water marks: inside, they only rise
             self.replace(safe_state)
+            @version, @meta_version = version + 1, meta_version + 1
+            assert(context.same?(ctx)) # the operation left the stack as it found it
+            ctx.restore_position(position)
             raise(ex)
         end
     end
@@ -354,7 +374,11 @@ class Persistency::Backend::Memory(T)
         @lid2gid << gid
         lid
     end
+    # Bulk reads of the store - a whole column, or a record chain walked link by link: what a rebuild costs below the
+    # caches. A rebuild where nothing changed must cost none.
+    class_property bulk_reads : Int64 = 0_i64
     protected def get_ancestors(start_lid : Int64) : Array(RecordLID) # retrieves all (in)direct predecessors (vs. #get_field)
+        Memory.bulk_reads += 1
         res = Array(RecordLID).new
         # Predecessors is a meta field (field_lid < 0) — use the meta path.
         commit2rank = path_for_field(MetaFieldLIDs::Predecessors).map_with_index {|c,i| {c,i}}.to_h # rank: the higher, the newer
@@ -368,6 +392,7 @@ class Persistency::Backend::Memory(T)
         res.reverse
     end
     protected def get_field_internal(field_lid : FieldLID) : Hash(RecordLID,T) # retrieves all values of field (also potentially deleted ones, but not from excluded commits!)
+        Memory.bulk_reads += 1
         if field_lid == MetaFieldLIDs::RootCommit
             @field2record2commit2value[field_lid].map {|record_lid, commit2value| {record_lid, commit2value.first_value} }.to_h
         else
@@ -1408,7 +1433,7 @@ module Persistency::Generic::Refactoring(T)
         assert(field_lid_source != field_lid_target)
         assert(table_lid == get_table_lid(field_lid_source))
         assert(get_table_lid(field_lid_source) == get_table_lid(field_lid_target)) # same table
-        if get_outward_reference(field_lid_source) != get_outward_reference(field_lid_source)
+        if get_outward_reference(field_lid_source) != get_outward_reference(field_lid_target)
             raise ConditionsNotMet.new("Cannot merge, fields have different types")
         end
         values_source = get_field(field_lid_source)

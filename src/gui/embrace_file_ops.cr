@@ -5,11 +5,27 @@
 # Extracted from embrace.cr for maintainability
 
 class EmbraceApp < CrymbleUI::App
+    # A new Shape opens on the branch of the Shape the user is in - the frontmost open Shape
+    # panel - at that branch's tip. With no Shape open there is no branch to follow: it starts
+    # where the document was loaded, and ShapeState#update snaps that to a tip. (Seeding from the
+    # load position unconditionally opened every new Shape on the same branch, wherever the user
+    # was working.)
     private def shape_add : Nil
-        context = @persistency.context.clone
-        shape = ShapeState.new("Shape", @persistency, context)
-        @shapes << shape
+        origin = front_shape
+        context = origin ? origin.branch_tip_context : @persistency.context.clone
+        @shapes << ShapeState.new("Shape", @persistency, context)
         request_rebuild
+    end
+
+    # The Shape the user is in: the frontmost open Shape panel (a click brings a panel to the
+    # front). A Shape's panel carries the Shape's id (build_shape_panel).
+    private def front_shape : ShapeState?
+        return nil unless r = root
+        by_id = @shapes.index_by(&.id)
+        front = r.find_all_panels.reject(&.closed).compact_map { |panel|
+            panel.id.try { |id| by_id[id]? }.try { |shape| {panel.z_index, shape} }
+        }.max_by?(&.[0])
+        front.try(&.[1])
     end
 
     # Drill-down: spawn a new Shape that filters down to exactly the basic rows
@@ -47,18 +63,7 @@ class EmbraceApp < CrymbleUI::App
     # (statusbar warning). The on-disk file and the in-memory document are left intact
     # on any failure. Public so the file lifecycle is testable without driving dialogs.
     def save_document(name : String) : Bool
-        data = serialize_document # in memory first: a serialization failure never touches the disk
-        tmp = "#{name}.tmp.#{Process.pid}"
-        begin
-            File.open(tmp, "wb") do |h|
-                h.write(data)
-                h.flush; h.fsync # durable on disk before the rename replaces the good file
-            end
-            File.rename(tmp, name) # atomic replace (POSIX rename / Windows MoveFileEx REPLACE_EXISTING)
-        rescue ex
-            File.delete(tmp) if File.exists?(tmp) # best-effort: never leave a stray temp behind
-            raise ex
-        end
+        write_atomically(name, serialize_document) # in memory first: a serialization failure never touches the disk
         @filename = name
         @last_save_version = @persistency.version
         set_statusbar_info("Saved #{name}")
@@ -66,6 +71,53 @@ class EmbraceApp < CrymbleUI::App
     rescue ex
         set_statusbar_warning("Couldn't save #{name} — #{file_error_cause(ex)}; the previous version on disk is untouched")
         false
+    end
+
+    # `data` at `name`, whole or not at all: written beside it, made durable, then renamed over it - a failure at
+    # any step leaves what was at `name` untouched. Saving and the recovery copy both write this way.
+    private def write_atomically(name : String, data : Bytes) : Nil
+        tmp = "#{name}.tmp.#{Process.pid}"
+        File.open(tmp, "wb") do |h|
+            h.write(data)
+            h.flush; h.fsync # durable on disk before the rename replaces the good file
+        end
+        File.rename(tmp, name) # atomic replace (POSIX rename / Windows MoveFileEx REPLACE_EXISTING)
+    rescue ex
+        File.delete(tmp) if tmp && File.exists?(tmp) # best-effort: never leave a stray temp behind
+        raise ex
+    end
+
+    # Keep the unsaved work of an app that is ending on an error (Recovery.guarded), and say how that went. Returns
+    # the copy's path, or nil when nothing was unsaved or nothing could be kept. Never raises: it runs on the way out
+    # of a crash and must not replace the error that caused it. Touches no widget - the UI may be what failed.
+    def write_recovery_copy(now : Time? = nil) : String?
+        return if @last_save_version == @persistency.version
+        path = nil
+        Recovery.say(begin
+            path = recovery_copy(now || Time.local)
+            "Unsaved work kept in #{path}"
+        rescue ex
+            "Unsaved work not kept: #{ex.message}"
+        end)
+        path
+    end
+
+    # A copy in Recovery.dir, checked to parse back, written atomically under a name no other copy has; its absolute
+    # path. Raises what stops it, for write_recovery_copy to say.
+    private def recovery_copy(now : Time) : String
+        dir = Recovery.dir || raise Recovery::NO_DIR
+        data = serialize_document
+        Persistency::Default.new.load(data) # the parse Load does: a copy that fails it would only look like a rescue
+        Dir.mkdir_p(dir)
+        stem = File.join(File.expand_path(dir),
+            "#{@filename.try { |f| File.basename(f, ".embrace") } || "untitled"} #{now.to_s("%Y-%m-%d %H-%M-%S")}")
+        path = "#{stem}.embrace"
+        taken = 1
+        while File.exists?(path)
+            path = "#{stem} #{taken += 1}.embrace"
+        end
+        write_atomically(path, data)
+        path
     end
 
     # The serialize step, named so the save path is testable (Persistency itself can't be
@@ -96,7 +148,7 @@ class EmbraceApp < CrymbleUI::App
     end
 
     private def do_save_as
-        dialog = Dialogs::DirBrowser.new("Save file as...", "*.embrace") do |name|
+        dialog = Dialogs::FileBrowser.new("Save file as...", "*.embrace") do |name|
             # Picking a name that already exists is the one destructive thing this dialog can do,
             # and it did it silently. The write itself is atomic, so nothing can be left
             # half-replaced — but a file that was someone else's work is still gone, with no undo.
@@ -113,7 +165,7 @@ class EmbraceApp < CrymbleUI::App
     private def do_newfile_empty
         protect_unsaved_changes("create a new (empty) file") do
             do_newfile_empty_impl
-            @shapes.clear
+            clear_shapes
             shape_add
             set_statusbar_info("New file (empty)")
             request_rebuild
@@ -206,7 +258,7 @@ class EmbraceApp < CrymbleUI::App
                 Riley | Present | Arts | 100
                 Amanita | Present | Arts | 100
             EOT
-            @shapes.clear
+            clear_shapes
             shape_add
             @last_save_version = @persistency.version
             set_statusbar_info("New file (demo)")
@@ -228,7 +280,7 @@ class EmbraceApp < CrymbleUI::App
         end
         @persistency = fresh
         @last_save_version = @persistency.version
-        @shapes.clear
+        clear_shapes
         shape_add
         @filename = name
         set_statusbar_info("Loaded #{name}")
@@ -239,7 +291,7 @@ class EmbraceApp < CrymbleUI::App
     end
 
     private def do_load
-        dialog = Dialogs::DirBrowser.new("Load file...", "*.embrace") do |name|
+        dialog = Dialogs::FileBrowser.new("Load file...", "*.embrace") do |name|
             protect_unsaved_changes("load '#{name}'") do
                 load_document(name)
                 request_rebuild
@@ -252,12 +304,10 @@ class EmbraceApp < CrymbleUI::App
     # Import an xlsx table into `shape`'s persistency as a new Shape. Returns true on
     # success; on failure returns false leaving the document and context stack untouched.
     def import_document(shape : ShapeState, filename : String, tablename : String) : Bool
-        # Push a THROWAWAY context dup: Persistency#import wraps its mutations in a transaction that
-        # rolls back the data, but NOT the top Context object (close_and_add_commit mutates it in
-        # place). The dup absorbs that and is discarded by the ensure-pop below, so the shape's own
-        # context is never left pointing at a rolled-back commit.
-        shape.persistency.contexts.push(shape.context.dup)
-        begin
+        # Import on a DUP of the shape's context: on success the new Shape is built on it, so it owns
+        # its own position and the source Shape's does not move when the import opens a commit (on a
+        # failure the transaction puts the data and the dup's position back, and the dup is dropped).
+        shape.persistency.with_context(shape.context.dup) do
             table_lid = shape.persistency.import(filename, tablename)
             new_shape = ShapeState.new("Shape", shape.persistency, shape.persistency.context, table_lid)
             # ShapeState.new above reads the still-pushed context — THAT is what must
@@ -266,12 +316,10 @@ class EmbraceApp < CrymbleUI::App
             n = shape.persistency.get_record_lids(table_lid).size
             set_statusbar_info("Imported \"#{tablename}\" (#{n} records) from #{filename}")
             true
-        rescue ex
-            set_statusbar_warning("Couldn't import #{filename} — #{file_error_cause(ex)}; nothing was added")
-            false
-        ensure
-            shape.persistency.contexts.pop
         end
+    rescue ex
+        set_statusbar_warning("Couldn't import #{filename} — #{file_error_cause(ex)}; nothing was added")
+        false
     end
 
     # === Clipboard ===
@@ -306,13 +354,15 @@ class EmbraceApp < CrymbleUI::App
         true
     end
 
-    # Build a new table from clipboard TSV and open a Shape on it.
+    # Build a new table from clipboard TSV and open a Shape on it, on the branch of the
+    # Shape it was invoked from - like import_document: on a dup of that Shape's context,
+    # which the new Shape is built on, so the source Shape's position does not move.
     #
-    # Reads @persistency.context rather than a Shape's, so this works with NO Shape
-    # open — which is why it lives on the app menu rather than a Shape's. Otherwise it
-    # mirrors import_document's atomicity: a throwaway context dup absorbs the fact
-    # that a transaction rolls back data but NOT the Context object.
-    def paste_clipboard_as_new_table : Bool
+    # Never on the persistency's base context: that is the position as of the last load,
+    # never moved after it, so once a Shape had committed it named a closed commit and the
+    # write forked a new branch nobody asked for. Every Shape carries its own position,
+    # so a new table is a Shape act (Shape > Edit), and "New Shape" is always there.
+    def paste_clipboard_as_new_table(shape : ShapeState) : Bool
         text = CrymbleUI::Widget.clipboard.text
         # ONE emptiness predicate: the real backend returns "" for an empty clipboard,
         # for no owner AND for a conversion timeout — nil is reachable only in specs.
@@ -324,8 +374,7 @@ class EmbraceApp < CrymbleUI::App
         cells = rows.map do |row|
             Array(Persistency::Cell).new(width) { |i| convert_pasted(row[i]? || "") }
         end
-        @persistency.contexts.push(@persistency.context.dup)
-        begin
+        @persistency.with_context(shape.context.dup) do
             table_lid = @persistency.import_rows(cells, "", Array.new(width, ""))
             new_shape = ShapeState.new("Shape", @persistency, @persistency.context, table_lid)
             # ShapeState.new above reads the still-pushed context — THAT is what must
@@ -335,8 +384,6 @@ class EmbraceApp < CrymbleUI::App
             set_statusbar_info("Pasted as new table \"#{name}\" (#{cells.size} records) — fields are unnamed; " \
                                "if row 1 holds column names, right-click it and \"Take field names from record\"")
             true
-        ensure
-            @persistency.contexts.pop
         end
     rescue ex
         set_statusbar_warning("Couldn't paste — #{file_error_cause(ex)}; nothing was added")
@@ -364,8 +411,8 @@ class EmbraceApp < CrymbleUI::App
     end
 
     # Add dialog, or bring existing one to front if already open
-    private def add_dialog(dialog : Dialogs::Base)
-        existing = @dialogs.find { |d| d.id == dialog.id && d.open }
+    private def add_dialog(dialog : Dialogs::Hosted)
+        existing = @dialogs.find { |d| d.id == dialog.id && d.open? }
         if existing
             find(existing.id).try { |w| w.as(CrymbleUI::WindowPanel).bring_to_front if w.is_a?(CrymbleUI::WindowPanel) }
         else

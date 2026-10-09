@@ -10,6 +10,7 @@ require "./theme_colors" # registers embrace's app-owned Theme color tokens (vht
 # The widget rendering is in embrace.cr (build_vhtree method).
 
 module Interface::GUI::VHTreeAdapter
+    # `::Persistency` - inside Interface, a bare `Persistency` names Interface::Persistency (persistency.cr).
     abstract def each(&block : Interface::GUI::VHTreeAdapter ->)
     abstract def get_reference : Interface::GUI::VHTreeAdapter? # odd level node references odd-2 level node
     abstract def get_display_texts : Array(String)
@@ -24,8 +25,12 @@ module Interface::GUI::VHTreeAdapter
     abstract def node : Table::VirtualTable::Tree
     abstract def is_table? : Bool
     abstract def is_pseudo_field? : Bool
-    abstract def field_lid : Persistency::FieldLID?
-    abstract def table_lid : Persistency::TableLID?
+    abstract def field_lid : ::Persistency::FieldLID?
+    abstract def table_lid : ::Persistency::TableLID?
+    abstract def key : String # GUI::Ids.path_key of the node - its logical id
+    # For a table row reached through an INWARD reference (drawn with ◄ on its referencing field):
+    # that field of this table; nil for every other row.
+    abstract def inward_via : ::Persistency::FieldLID?
 end
 
 # VHTree 2D columnar layout widget

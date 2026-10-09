@@ -4,6 +4,7 @@ require "../../src/gui/embrace"
 require "../../src/debug-helper"
 require "../../src/constants"
 require "crymble-ui/testing/test_renderer"
+require "./support/fixtures"
 
 include Persistency
 
@@ -11,13 +12,7 @@ include Persistency
 # Uses crymble-ui's TestRenderer — no SFML, no X11.
 
 private def make_sales_app : EmbraceApp
-    # EmbraceApp's initialize does do_newfile_empty_impl + shape_add, so we
-    # start with an empty table. Then we replace its persistency contents.
-    app = EmbraceApp.new
-    persistency = app.persistency
-    hash = Hash(String, FieldLID | TableLID | RecordLID).new
-    help = TableReader(Persistency::Default, Persistency::Cell).new(persistency, hash)
-    help << <<-EOT
+    Fixtures.app(<<-EOT)[0]
         Sales
         Region | Product | Amount
         north | widget | 10
@@ -26,13 +21,6 @@ private def make_sales_app : EmbraceApp
         south | gadget | 40
         north | widget | 50
     EOT
-    # Re-create the shape so it picks up the new table; pre-select the Sales table
-    sales_lid = hash["Sales"].as(TableLID)
-    app.shapes.clear
-    ctx = persistency.context.clone
-    app.shapes << ShapeState.new("Sales", persistency, ctx, sales_lid)
-    app.request_rebuild
-    app
 end
 
 describe "Filter UI section" do
