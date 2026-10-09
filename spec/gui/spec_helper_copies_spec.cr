@@ -51,7 +51,8 @@ end
 
 # {files read, defs seen, groups of sites sharing one body across two or more files}.
 private def copies(dir : String) : {Int32, Int32, Array(Array(Site))}
-    files = Dir.glob(File.join(dir, "**", "*.cr")).sort
+    # `/` in the pattern: on Windows a `\` there (File.join, __DIR__) reads as an escape and matches nothing.
+    files = Dir.glob("#{dir.gsub('\\', '/')}/**/*.cr").sort
     by_body = Hash(String, Array(Site)).new { |h, k| h[k] = [] of Site }
     defs = 0
     files.each do |path|
@@ -64,7 +65,7 @@ private def copies(dir : String) : {Int32, Int32, Array(Array(Site))}
         collector.defs.each do |d|
             defs += 1
             body = d.body.to_s
-            by_body[body] << Site.new(Path[path].relative_to(dir).to_s, d.name) if body.lines.size >= MIN_LINES
+            by_body[body] << Site.new(Path[path].relative_to(dir).to_posix.to_s, d.name) if body.lines.size >= MIN_LINES
         end
     end
     {files.size, defs, by_body.values.select { |sites| sites.map(&.file).uniq.size > 1 }}

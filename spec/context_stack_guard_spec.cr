@@ -5,12 +5,14 @@ require "spec"
 # later read then answers from the wrong commit. (Scope: the `contexts.push(` form; a bare pop that clears the stack,
 # as EmbraceApp's start does, is no pair and is not looked at.) An exception, if one is ever needed, is named in
 # ALLOWED by file and method, and must be hit exactly once.
-private ROOT    = File.expand_path("..", __DIR__)
+# Forward slashes throughout: Dir.glob wants `/` in its pattern (a Windows `\` there reads as an escape, and the
+# pattern matches nothing) and hands back `\` on Windows, which the lchop below would not strip.
+private ROOT    = File.expand_path("..", __DIR__).gsub('\\', '/')
 private ALLOWED = Set({String, String}).new
 
 describe "context switches in src/" do
     it "go through Persistency#with_context" do
-        files = Dir.glob(File.join(ROOT, "src/**/*.cr")).sort
+        files = Dir.glob("#{ROOT}/src/**/*.cr").map(&.gsub('\\', '/')).sort
         files.size.should be > 0 # a guard that finds nothing proves nothing
         offenders = [] of String
         allowed_hits = Hash({String, String}, Int32).new(0)
