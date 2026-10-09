@@ -80,7 +80,9 @@ describe "the file dialogs, from the File menu" do
             ui.ui.focused_id.not_nil!.should start_with(browse)
             ui.ui.select_file("#{browse}_files", "temp") # the second: into temp/
             ui.ui.open_file("#{browse}_files", File.join(dir.lchop("temp/"), "book.xlsx"))
-            ui.ui.text("#{import_id}_file").should end_with(File.join(dir, "book.xlsx"))
+            # Both sides in / form: the dialog shows the native absolute path (\ on Windows), while dir was
+            # written with / and File.join adds the platform's separator - a mixed string matching neither.
+            Path[ui.ui.text("#{import_id}_file")].to_posix.to_s.should end_with(Path[dir, "book.xlsx"].to_posix.to_s)
             ui.ui.present?(browse).should be_false
             ui.ui.present?(import_id).should be_true
         end
