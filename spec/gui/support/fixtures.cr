@@ -31,6 +31,8 @@ module Fixtures
 
     # An app on these tables with `shapes` Shapes on `open` (default: the text's first table), titled `title`
     # (default: the table), each on its own context taken after the read; a rebuild requested, nothing rendered.
+    # The Shapes are placed at the first build, against the window the app declares (1200x900), whatever size the
+    # renderer then gives it.
     def self.app(text : String, open : String? = nil, title : String? = nil, shapes : Int32 = 1) : {EmbraceApp, Lids}
         app = EmbraceApp.new
         lids = read_tables(app.persistency, text)

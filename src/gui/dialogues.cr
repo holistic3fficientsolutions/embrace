@@ -5,6 +5,7 @@ require "../global"
 require "../persistency"
 require "../constants"
 require "./tablefieldpicker"
+require "./placed"
 require "crymble-ui"
 
 # Dialog state classes. A dialog is not a window of its own: it is a state object EmbraceApp keeps in its
@@ -13,9 +14,12 @@ require "crymble-ui"
 
 module Dialogs
 
-# What EmbraceApp's dialog list reads of a dialog: its id, whether it is still open, and closing it.
+# What EmbraceApp's dialog list reads of a dialog: its id, whether it is still open, closing it - and its place in
+# the cascade, where it opens (add_dialog). A dialog asked for again while open is the one already there - it comes
+# forward and is not placed again.
 module Hosted
-    abstract def id : String
+    include Placed # its id, too
+
     abstract def open? : Bool
     abstract def close : Nil
 end
@@ -27,12 +31,21 @@ abstract class Base
     getter id : String
     getter title : String
     getter? open : Bool = true
+    @focused = false
 
     def initialize(@title : String, @id : String = "dialog_#{object_id}")
     end
 
     def close : Nil
         @open = false
+    end
+
+    # The dialog's first field takes the keyboard when the dialog opens - once: a later rebuild (a pick in one of
+    # its own lists, a file dialog opened on top of it) leaves the keyboard where the user has put it since.
+    def focus_once(field : CrymbleUI::Widget) : Nil
+        return if @focused
+        @focused = true
+        field.request_focus
     end
 end
 
@@ -57,16 +70,19 @@ class ImportantInformer < Base
     end
 end
 
+# A question: its title asks, Ok runs the block. Never modal - several can be open, and a user can leave one open to
+# look something up. Its id is its text, so the same question asked again is the one already open.
 class Decider < Base
     getter block : Proc(Nil)
 
     def initialize(title : String, &@block : ->)
-        super(title, "decider_#{object_id}")
+        super(title, "question_#{title.hash}")
     end
 
+    # Closed first: an action that asks again, or fails, leaves no stale question behind.
     def accept
-        @block.call
         close
+        @block.call
     end
 end
 
@@ -126,9 +142,6 @@ class ImportTable < Base
     getter wildcard : String
     getter tablename = CrymbleUI::Source(String).new("(new table)")
     getter filename = CrymbleUI::Source(String).new("")
-    # Set once its field has taken the keyboard: a later rebuild (one a file dialog opened on top of it triggers)
-    # must not take it back from that dialog.
-    property focused_once : Bool = false
 
     def initialize(title : String, @wildcard : String, &@block : String, String ->)
         super(title, "importtable_#{object_id}")

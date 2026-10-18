@@ -171,6 +171,18 @@ class Configurator(T,U) # TODO(vtable): collapse this Configurator namespace int
         end
         @dirty = true
     end
+    # A new field in `table`'s table, written in this Configurator's context and selected - so whatever shows the
+    # Configurator shows it. A collapsed table lists no fields (one reached through a reference starts so): it is
+    # opened first, so the field has its row. The one owner for adding a field through the tree (VirtualTable's
+    # hyperplane_add, a table's menu).
+    def add_field(table : Tree, name : String, refers_to : FieldLID?) : FieldLID
+        field = @persistency.with_context(@context) { @persistency.add_field(table.value.as(TableLID), name, refers_to) }
+        toggle_expand(table) unless is_expanded?(table)
+        field_node = table[field] # read after the write: the tree hook has re-listed the table's fields
+        assert(!is_selected?(field_node))
+        toggle_select(field_node)
+        field
+    end
     def toggle_select(node : Tree)
         update
         if is_selectable?(node)
@@ -626,7 +638,6 @@ class VirtualTable(T, U) < Table::Lazy::Raw::Base(T)
                     internal_col = @tree.user_columns[col]
                     node = @tree.indices.bwd(internal_col)[0]
                 end
-                table_lid = node.value.as(TableLID)
                     # Storage keeps the TRUTH: an un-named field stores "" (the AddField dialog
                     # submits ""). The "(unnamed)" placeholder is applied at READ time by
                     # Persistency#display_name — one owner for every display surface, and rename/
@@ -634,11 +645,7 @@ class VirtualTable(T, U) < Table::Lazy::Raw::Base(T)
                     name = args[:name]? || ""
                 refers_to_field_lid = args[:refers_to_field_lid]? || nil
                 # finally, mark in Configurator
-                field_lid = @persistency.add_field(table_lid, name, refers_to_field_lid)
-                # @tree.configurator.update # done implicitly by tree hook in Configurator
-                field_node = node[field_lid] # relies on updated (internal, vs. root) `node` after the persistency call!
-                assert(!@tree.configurator.is_selected?(field_node))
-                @tree.configurator.toggle_select(field_node)
+                field_lid = @tree.configurator.add_field(node, name, refers_to_field_lid)
                 # now construct a new index (to return)
                 update
                 ci = @tree.indices[{node,field_lid}] # internal column
@@ -804,7 +811,7 @@ class VirtualTable(T, U) < Table::Lazy::Raw::Base(T)
                                     all_assignments << {index, value}
                                     row, col = index[0], @tree.user_columns[index[1]]
                                     if @table_raw[row][col].is_a?(NilRecord)
-                                        raise ConditionsNotMet.new("Cannot assign to a non-existant record")
+                                        raise ConditionsNotMet.new("Cannot store a value in a record that does not exist (it is reached through a reference)")
                                     end
                                     if value.is_a?(NilRecord)
                                         raise ConditionsNotMet.new("Cannot indirectly unreference a record")

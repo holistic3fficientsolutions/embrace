@@ -52,9 +52,11 @@ The adapter also handles assignability checks — it queries
 `Hierarchic.get_assignability(index)` to determine whether a cell is editable (and, since
 multi-line values, whether its editor may author a line break — the writable cases, which is
 why an empty cell can be given one),
-insertable, or read-only. A structurally empty cell (a non-assignable dead
-pivot intersection) is rendered with a dimmed `cell.empty` background, so an
-area where no value can go stays visually distinct from a live cell.
+insertable, or read-only. A cell with no record - a dead pivot intersection, or an
+empty one typing would make a record in - is rendered with a dimmed `cell.empty`
+background, so an area where no value stands stays visually distinct from a live cell. A live cell
+reads in `cell.live`, a neutral grey a step lighter (no hue: the field list's colours tint
+the header cells, Rows / Columns, not the values).
 
 ### SimpleVHTreeAdapter
 
@@ -196,6 +198,25 @@ the same commit shows it, and stepping back to the commit before shows the grid 
 
 A cell moves only within its own Shape: dropped on another Shape - even one of the same table - it moves
 nothing, and no cell there lights up while it hovers.
+
+**Where a Shape opens.** A new Shape opens a little right of and below the newest one, so the title bar of each
+Shape behind it still shows and a press there brings it back. That goes on as far as the window has room - in
+a window 1200 wide and 900 high, five Shapes; in a lower window the Shapes step only sideways, each one behind
+showing just the left end of its title bar. Past that the next Shape starts over where the first one opened: it
+hides that one completely, and of the next one or two only the close X at the right end of the title bar still
+shows - a click there closes that Shape. Ctrl+Tab reaches every Shape. The room is counted when a Shape opens:
+making the window smaller later keeps each Shape inside it, but does not spread them out again.
+
+**The keyboard in a Shape.** A Shape that opens - at launch, by New Shape, a drill-down - holds the keyboard in its
+grid (its table picker while it has no table). Brought back to the front (a press on it, Ctrl+Tab) it gets the
+keyboard where it was left. In the tabbed layout, a page that does not show that widget falls back to the
+Shape's first Tab stop. Inside the Shape the grid keeps Tab for its cursor; F6 / Shift+F6 move to the Shape's other
+parts (its table picker, filters, buttons) and back; Ctrl+Tab moves to the next panel.
+
+**Today's date with Ctrl+.** In a Shape's grid, Ctrl+. types today's date as `YYYYMMDD ` (with a space after
+it), exactly as if typed: at the caret while a cell is being edited, starting an edit on the cell the cursor is
+on. A cell holding only the date reads as a number, as if the digits were typed. On a drill-down cell it drills,
+once. Other fields - and a reference cell's open list - take no date.
 
 **Moving a cell with Ctrl+X / Ctrl+V.** Ctrl+X (or the cell's context menu, *Cut cell*) marks a cell
 with a moving outline; Ctrl+V (or *Paste cell*) on another cell of the same Shape moves it there - the

@@ -21,6 +21,7 @@ require "./cell"
 
 # the windows:
 require "./dialogues"
+require "./placed"
 
 include Persistency
 
@@ -87,6 +88,11 @@ class SimpleVHTreeAdapter
 
     def toggle_select : Nil
         @configurator.toggle_select(@node)
+    end
+
+    # A field added to this node's table (its menu's Add field...), selected so the Shape shows it.
+    def add_field(name : String, refers_to : FieldLID?) : Nil
+        @configurator.add_field(@node, name, refers_to)
     end
 
     def toggle_expand : Nil
@@ -191,6 +197,10 @@ class SimpleMatrixAdapter(T, U, V)
     # Fired after every write, with whether it was STRUCTURAL (announce_write's answer): the app
     # rebuilds either way, and lets input queued behind a per-cell write carry on meanwhile.
     property on_data_changed : Proc(Bool, Nil)?
+    # Told what a write the data refused said ("Can only assign Reference to Reference; ignoring command"): the app
+    # shows it. A refusal is not raised from a write bridge - an editor commit can run outside an event (a cell
+    # scrolled away, a rebuild), where nothing would catch it - and the write's bookkeeping must run either way.
+    property on_refused : Proc(String, Nil)?
     # Called on every change typed, deleted or pasted into a cell - a text cell's editor (before anything is
     # written: the value commits later) or a reference cell's list filter (which changes no value; a pick
     # does); a receiver may ignore every call after the first. Called with the painted cell (a merge's
@@ -294,7 +304,10 @@ class SimpleMatrixAdapter(T, U, V)
         # v1 parity (dropped in the CrymbleUI port 70be1d0): a structurally empty
         # cell — a non-assignable dead pivot intersection — reads dimmed, so
         # "nothing goes here" stays visible. Keyed on assignability exactly like
-        # v1's matrix#calc_color; a live cell (incl. assignable-but-empty) stays flat.
+        # v1's matrix#calc_color. A live cell - one with a value or a drill-down - reads in
+        # cell.live, a neutral grey a step apart from a dead one (the plain input background was
+        # one step from cell.empty; the Aggregates brown it had for a while was not v1). An empty
+        # intersection typing would make a record in (Indirectly) stays dimmed: no record there.
         # ONE assignability query per painted cell. `get_assignability` is not a lookup — it
         # walks the pivot tree (two `map_index` calls, each allocating) — and this method asks
         # two different questions of it: does the cell read as structurally empty, and may its
@@ -305,8 +318,8 @@ class SimpleMatrixAdapter(T, U, V)
                       assignability == Table::Lazy::Pivot::Assignability::Drilldown
         accepts_breaks = assignability == Table::Lazy::Pivot::Assignability::Directly ||
                          assignability == Table::Lazy::Pivot::Assignability::Indirectly
-        if bg.nil? && header_info.nil? && !has_content
-            bg = CrymbleUI::Theme.current["cell.empty"]
+        if bg.nil? && header_info.nil?
+            bg = CrymbleUI::Theme.current[has_content ? "cell.live" : "cell.empty"]
         end
         case value
         when ReferenceCell
@@ -570,7 +583,8 @@ class SimpleMatrixAdapter(T, U, V)
             before = may_announce_per_cell?(shape, {row, col}) ? capture_structure : nil
             result = @persistency.with_context(shape.context) do
                 cell_assign({row, col}, converted[0])
-            rescue ConditionsNotMet
+            rescue ex : ConditionsNotMet
+                @on_refused.try &.call(ex.message || "")
                 {row, col}
             end
             CrymbleUI::InputLog.record_write(row, col, value) if CrymbleUI::InputLog.enabled?
@@ -600,7 +614,8 @@ class SimpleMatrixAdapter(T, U, V)
                 else
                     {row, col}
                 end
-            rescue ConditionsNotMet
+            rescue ex : ConditionsNotMet
+                @on_refused.try &.call(ex.message || "")
                 {row, col}
             end
             structural = announce_write(shape, {row, col}, result, before)
@@ -974,6 +989,17 @@ class ShapeState
     getter persistency : Persistency::Default
     property context : Persistency::Context
 
+    # Where the Shape's panel opens (EmbraceApp#place_shape): its order among the open Shapes (Placed), and its
+    # cascade - the step the next one steps from, and the origin it asks - set together by open_at. Unplaced until
+    # its first build; a duplicate starts unplaced.
+    include Placed
+    getter cascade : {step: Int32, origin: {x: Float64, y: Float64}}? = nil
+
+    def open_at(slot : Int32, step : Int32, origin : {x: Float64, y: Float64}) : Nil
+        place(slot)
+        @cascade = {step: step, origin: origin}
+    end
+
     @version : Int32? = nil
     @configurator : Table::VirtualTable::Configurator(Cell, BaseCell)? = nil
     @fieldlist : Table::Lazy::Fieldlist(FieldlistCell, Cell)? = nil
@@ -1110,6 +1136,18 @@ class ShapeState
     getter fieldlist_data : Table::Lazy::Fieldlist(FieldlistCell, Cell)? = nil
     def configurator_ref : Table::VirtualTable::Configurator(Cell, BaseCell)?
         @configurator
+    end
+
+    # The configurator row with this logical key (GUI::Ids.path_key); nil once the Shape no longer has it.
+    def configurator_node(key : String) : Interface::GUI::VHTreeAdapter?
+        @vhtree_adapter.try { |root| node_with_key(root, key) }
+    end
+
+    private def node_with_key(node : Interface::GUI::VHTreeAdapter, key : String) : Interface::GUI::VHTreeAdapter?
+        return node if node.key == key
+        found = nil.as(Interface::GUI::VHTreeAdapter?)
+        node.each { |child| found ||= node_with_key(child, key) }
+        found
     end
 
     def initialize(@title : String, @persistency : Persistency::Default, @context : Context = Context.new, @table_lid : TableLID? = nil)
@@ -1579,17 +1617,44 @@ class ShapeState
     end
 
     def add_field_simple : Nil
-        if mrc = @matrix_userdata_rc
-            @persistency.with_context(@context) do
-                mrc.hyperplane_add(1)
-            end
-        end
+        add_field
     end
 
     def add_field_custom(name : String, ref_field_lid : FieldLID? = nil) : Nil
-        if mrc = @matrix_userdata_rc
-            @persistency.with_context(@context) do
-                mrc.hyperplane_add(1, name: name, refers_to_field_lid: ref_field_lid)
+        add_field(name: name, refers_to_field_lid: ref_field_lid)
+    end
+
+    # A field just added is where the user types next: the grid's cursor goes to its cell in the first record,
+    # with the keyboard. The pivot drops the new FieldLID on its way back up; Persistency#add_field makes it the
+    # table's last field, and the table is the configurator's root - VirtualTable#hyperplane_add's own default.
+    private def add_field(**args) : Nil
+        mrc = @matrix_userdata_rc || return
+        table = @configurator.not_nil!.tree.value.as(TableLID)
+        field = @persistency.with_context(@context) do
+            mrc.hyperplane_add(1, **args)
+            @persistency.get_value(MetaFieldLIDs::TableLastField, table).as(FieldLID)
+        end
+        cursor_to_field(field)
+    end
+
+    # The cursor on the field's first cell that is not a header - the first record, in any arrangement; with no
+    # record there is no such cell, and the cursor stays. Placed before the grid knows its new size (set_cursor,
+    # which does not clamp); the rebuild carries it over (cursor_rc reconciles).
+    private def cursor_to_field(field : FieldLID) : Nil
+        update
+        vm = matrix_adapter.try(&.virtual_matrix) || return
+        rc = @matrix_userdata_rc.not_nil!
+        vt = typed_vt
+        rows, cols = rc.size
+        @persistency.with_context(@context) do
+            rows.times do |r|
+                cols.times do |c|
+                    next if rc.get_header_info([r, c])
+                    next unless (col_id = rc.hyperplane_get_id(1, [r, c])) && vt.column_identity(col_id) == field
+                    vm.set_cursor(r, c)
+                    vm.request_focus
+                    return
+                end
             end
         end
     end
@@ -1642,35 +1707,6 @@ class ShapeState
         node.each { |c| list << c }
         list.each do |child|
             dfs(child, level + 1, &block)
-        end
-    end
-
-    # === Context Menu Support ===
-
-    def get_table_lid_for_field(node : Interface::GUI::VHTreeAdapter) : TableLID?
-        # A field node's parent is a table node in the configurator tree
-        if (field_lid = node.field_lid) && (configurator = @configurator)
-            # Walk the configurator tree to find which table this field belongs to
-            result = nil.as(TableLID?)
-            dfs_find_parent_table(configurator.tree, field_lid) do |parent_table_lid|
-                result = parent_table_lid
-            end
-            result
-        else
-            nil
-        end
-    end
-
-    private def dfs_find_parent_table(tree_node : Table::VirtualTable::Tree, target_field_lid : FieldLID, &block : TableLID ->)
-        tree_node.each do |_, child|
-            v = child.value
-            if v.is_a?(FieldLID) && v == target_field_lid
-                # This child is the field - parent's value should be a TableLID
-                pv = tree_node.value
-                yield pv.as(TableLID) if pv.is_a?(TableLID)
-                return
-            end
-            dfs_find_parent_table(child, target_field_lid, &block)
         end
     end
 

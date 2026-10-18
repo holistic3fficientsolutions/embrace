@@ -5,18 +5,57 @@
 # Extracted from embrace.cr for maintainability
 
 class EmbraceApp < CrymbleUI::App
-    # A dialog's text field: Enter accepts the dialog, Escape closes it. The window's own Escape shortcut takes
-    # the key first while the dialog is in front; this one closes it when another panel is in front but the
-    # keyboard is still in the field (dialogs are not modal).
+    # Enter in a dialog's text field accepts the dialog: these dialogs have no Enter shortcut of their own, so the
+    # field's submit is the path. Escape is the dialog window's shortcut - its panel holds the keyboard whenever
+    # its field does (crymbleui: the panel in front holds the keyboard), so it never reaches the field.
     private def dialog_input_events(dialog : Dialogs::Creator | Dialogs::Renamer | Dialogs::AddField | Dialogs::ImportTable) : Proc(String, CrymbleUI::TextInputEvent, Nil)
         ->(_value : String, ev : CrymbleUI::TextInputEvent) {
             if ev.submit?
                 dialog.accept; request_rebuild
-            elsif ev.cancel?
-                dialog.close; request_rebuild
             end
             nil
         }
+    end
+
+    # Put a question to the user: Ok runs `action`, as things stand when it is pressed (see Dialogs::Decider).
+    private def ask(message : String, &action : -> Nil) : Nil
+        add_dialog(Dialogs::Decider.new(message, &action))
+    end
+
+    # Add dialog, or bring the one with its id to the front if that is open. A new one is placed one step past the
+    # open dialogs (the first place when none is open), so it lies off their title bars (Dialogs::Hosted).
+    private def add_dialog(dialog : Dialogs::Hosted) : Nil
+        open_dialogs = @dialogs.select(&.open?)
+        if existing = open_dialogs.find { |d| d.id == dialog.id }
+            find(existing.id).try(&.as?(CrymbleUI::WindowPanel)).try(&.bring_to_front)
+        else
+            dialog.place(open_dialogs.max_of?(&.slot).try(&.succ) || 0)
+            @dialogs << dialog
+        end
+        request_rebuild
+    end
+
+    # Where a dialog opens: one step right and down per place (add_dialog), so the top of the title bar of each dialog
+    # behind it shows. Eight steps, then the first place again.
+    private def dialog_origin(dialog : Dialogs::Hosted) : {x: Float64, y: Float64}
+        step = 24.0 * (dialog.slot % 8)
+        {x: 250.0 + step, y: 200.0 + step}
+    end
+
+    # The check of an Ok that waited - nothing is modal, so its target can be gone by now: true when `present` holds,
+    # read in the Shape's context, in the open document; else the status bar says "<what> <gone> - <nothing_done>"
+    # ("is no longer there", unless the target changed rather than vanished), and nothing is done.
+    private def still_there?(shape : ShapeState, what : String, nothing_done : String,
+                             gone : String = "is no longer there", &present : -> Bool) : Bool
+        if !shape.persistency.same?(@persistency)
+            set_statusbar_warning("#{what} was in a document no longer open - #{nothing_done}")
+            false
+        elsif !shape.persistency.with_context(shape.context) { yield }
+            set_statusbar_warning("#{what} #{gone} - #{nothing_done}")
+            false
+        else
+            true
+        end
     end
 
     private def build_dialog(dialog : Dialogs::Hosted) : Nil
@@ -36,14 +75,14 @@ class EmbraceApp < CrymbleUI::App
         when Dialogs::FactorOut
             build_factor_out_dialog(dialog)
         when Dialogs::FileBrowser
-            file_dialog(dialog)
+            file_dialog(dialog, **dialog_origin(dialog))
         when Dialogs::DisAssociateFields
             build_disassociate_dialog(dialog)
         end
     end
 
     private def build_informer_dialog(dialog : Dialogs::ImportantInformer) : Nil
-        wp = window_panel(dialog.title, x: 250.0, y: 200.0, width: 500.0, height: 200.0, id: dialog.id) do
+        wp = window_panel(dialog.title, **dialog_origin(dialog), width: 500.0, height: 200.0, id: dialog.id) do
             on_closed { dialog.close; request_rebuild }
             register_shortcut("Escape") { dialog.close; request_rebuild }
             register_shortcut("Enter") { dialog.accept; request_rebuild }
@@ -57,7 +96,7 @@ class EmbraceApp < CrymbleUI::App
     end
 
     private def build_decider_dialog(dialog : Dialogs::Decider) : Nil
-        wp = window_panel(dialog.title, x: 250.0, y: 200.0, width: 500.0, height: 120.0, id: dialog.id) do
+        wp = window_panel(dialog.title, **dialog_origin(dialog), width: 500.0, height: 120.0, id: dialog.id) do
             on_closed { dialog.close; request_rebuild }
             register_shortcut("Escape") { dialog.close; request_rebuild }
             register_shortcut("Enter") { dialog.accept; request_rebuild }
@@ -71,7 +110,7 @@ class EmbraceApp < CrymbleUI::App
     end
 
     private def build_creator_dialog(dialog : Dialogs::Creator) : Nil
-        window_panel(dialog.title, x: 250.0, y: 200.0, width: 400.0, height: 150.0, id: dialog.id) do
+        window_panel(dialog.title, **dialog_origin(dialog), width: 400.0, height: 150.0, id: dialog.id) do
             on_closed { dialog.close; request_rebuild }
             register_shortcut("Escape") { dialog.close; request_rebuild }
             vstack(spacing: 10.0, padding: 10.0) do
@@ -79,7 +118,7 @@ class EmbraceApp < CrymbleUI::App
                     text("Name:")
                     ti = text_input(bind: dialog.name, id: "#{dialog.id}_name", width: 250.0,
                         on_event: dialog_input_events(dialog))
-                    ti.request_focus
+                    dialog.focus_once(ti)
                 end
                 hstack(spacing: 10.0) do
                     button("Ok", id: "#{dialog.id}_ok") { dialog.accept; request_rebuild }
@@ -90,7 +129,7 @@ class EmbraceApp < CrymbleUI::App
     end
 
     private def build_renamer_dialog(dialog : Dialogs::Renamer) : Nil
-        window_panel(dialog.title, x: 250.0, y: 200.0, width: 400.0, height: 150.0, id: dialog.id) do
+        window_panel(dialog.title, **dialog_origin(dialog), width: 400.0, height: 150.0, id: dialog.id) do
             on_closed { dialog.close; request_rebuild }
             register_shortcut("Escape") { dialog.close; request_rebuild }
             vstack(spacing: 10.0, padding: 10.0) do
@@ -101,7 +140,7 @@ class EmbraceApp < CrymbleUI::App
                     text("New name:")
                     ti = text_input(bind: dialog.name_new, id: "#{dialog.id}_name", width: 250.0,
                         on_event: dialog_input_events(dialog))
-                    ti.request_focus
+                    dialog.focus_once(ti)
                 end
                 hstack(spacing: 10.0) do
                     button("Ok", id: "#{dialog.id}_ok") { dialog.accept; request_rebuild }
@@ -112,7 +151,7 @@ class EmbraceApp < CrymbleUI::App
     end
 
     private def build_addfield_dialog(dialog : Dialogs::AddField) : Nil
-        window_panel(dialog.title, x: 250.0, y: 200.0, width: 450.0, height: 250.0, id: dialog.id) do
+        window_panel(dialog.title, **dialog_origin(dialog), width: 450.0, height: 250.0, id: dialog.id) do
             on_closed { dialog.close; request_rebuild }
             register_shortcut("Escape") { dialog.close; request_rebuild }
             vstack(spacing: 10.0, padding: 10.0) do
@@ -120,7 +159,7 @@ class EmbraceApp < CrymbleUI::App
                     text("Field name:")
                     ti = text_input(bind: dialog.name, id: "#{dialog.id}_name", width: 250.0,
                         on_event: dialog_input_events(dialog))
-                    ti.request_focus
+                    dialog.focus_once(ti)
                 end
 
                 if !dialog.suppress_reference
@@ -171,7 +210,7 @@ class EmbraceApp < CrymbleUI::App
     end
 
     private def build_import_table_dialog(dialog : Dialogs::ImportTable) : Nil
-        window_panel(dialog.title, x: 250.0, y: 200.0, width: 450.0, height: 200.0, id: dialog.id) do
+        window_panel(dialog.title, **dialog_origin(dialog), width: 450.0, height: 200.0, id: dialog.id) do
             on_closed { dialog.close; request_rebuild }
             register_shortcut("Escape") { dialog.close; request_rebuild }
             vstack(spacing: 10.0, padding: 10.0) do
@@ -179,10 +218,7 @@ class EmbraceApp < CrymbleUI::App
                     text("Filename:")
                     ti = text_input(bind: dialog.filename, id: "#{dialog.id}_file", width: 300.0,
                         on_event: dialog_input_events(dialog))
-                    unless dialog.focused_once # once: a file dialog opened on top keeps the keyboard
-                        dialog.focused_once = true
-                        ti.request_focus
-                    end
+                    dialog.focus_once(ti)
                 end
                 hstack(spacing: 5.0) do
                     text("Table name:")
@@ -191,7 +227,7 @@ class EmbraceApp < CrymbleUI::App
                 end
                 hstack(spacing: 10.0) do
                     button("Browse...", id: "#{dialog.id}_browse") do
-                        browser = Dialogs::FileBrowser.new("Select file", dialog.wildcard) do |path|
+                        browser = file_browser("Select file", dialog.wildcard) do |path|
                             dialog.filename.set(path)
                             request_rebuild
                         end
@@ -205,7 +241,7 @@ class EmbraceApp < CrymbleUI::App
     end
 
     private def build_factor_out_dialog(dialog : Dialogs::FactorOut) : Nil
-        window_panel(dialog.title, x: 250.0, y: 200.0, width: 450.0, height: 250.0, id: dialog.id) do
+        window_panel(dialog.title, **dialog_origin(dialog), width: 450.0, height: 250.0, id: dialog.id) do
             on_closed { dialog.close; request_rebuild }
             register_shortcut("Escape") { dialog.close; request_rebuild }
             register_shortcut("Enter") { dialog.accept; request_rebuild }
@@ -259,7 +295,7 @@ class EmbraceApp < CrymbleUI::App
     end
 
     private def build_disassociate_dialog(dialog : Dialogs::DisAssociateFields) : Nil
-        window_panel(dialog.title, x: 200.0, y: 150.0, width: 580.0, height: 400.0, id: dialog.id) do
+        window_panel(dialog.title, **dialog_origin(dialog), width: 580.0, height: 400.0, id: dialog.id) do
             on_closed { dialog.close; request_rebuild }
             register_shortcut("Escape") { dialog.close; request_rebuild }
             vstack(spacing: 10.0, padding: 10.0) do

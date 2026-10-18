@@ -148,18 +148,27 @@ class EmbraceApp < CrymbleUI::App
     end
 
     private def do_save_as
-        dialog = Dialogs::FileBrowser.new("Save file as...", "*.embrace") do |name|
+        dialog = file_browser("Save file as...", "*.embrace") do |name|
             # Picking a name that already exists is the one destructive thing this dialog can do,
             # and it did it silently. The write itself is atomic, so nothing can be left
             # half-replaced — but a file that was someone else's work is still gone, with no undo.
             if File.exists?(name)
-                @pending_confirm = {"#{name} already exists - overwrite it?", ->{ do_save(name); nil }}
-                request_rebuild
+                ask("#{name} already exists - overwrite it?") { do_save(name) }
             else
                 do_save(name)
             end
         end
         add_dialog(dialog)
+    end
+
+    # Every file dialog of embrace's (Load, Save as, Import's Browse) starts in the folder of the file last picked in
+    # one - the document's own after a Load or a Save as - so the user is not walked back from the folder embrace was
+    # started in each time. Before any pick it is that folder. Held for the session only.
+    private def file_browser(title : String, wildcard : String, &on_pick : String -> Nil) : Dialogs::FileBrowser
+        Dialogs::FileBrowser.new(title, wildcard, @file_folder) do |path|
+            @file_folder = File.dirname(path)
+            on_pick.call(path)
+        end
     end
 
     private def do_newfile_empty
@@ -291,7 +300,7 @@ class EmbraceApp < CrymbleUI::App
     end
 
     private def do_load
-        dialog = Dialogs::FileBrowser.new("Load file...", "*.embrace") do |name|
+        dialog = file_browser("Load file...", "*.embrace") do |name|
             protect_unsaved_changes("load '#{name}'") do
                 load_document(name)
                 request_rebuild
@@ -410,25 +419,11 @@ class EmbraceApp < CrymbleUI::App
         protect_unsaved_changes("quit") { quit }
     end
 
-    # Add dialog, or bring existing one to front if already open
-    private def add_dialog(dialog : Dialogs::Hosted)
-        existing = @dialogs.find { |d| d.id == dialog.id && d.open? }
-        if existing
-            find(existing.id).try { |w| w.as(CrymbleUI::WindowPanel).bring_to_front if w.is_a?(CrymbleUI::WindowPanel) }
-        else
-            @dialogs << dialog
-        end
-        request_rebuild
-    end
-
     private def protect_unsaved_changes(message : String, &block : ->)
         if @last_save_version == @persistency.version
             yield
-        elsif @pending_confirm
-            find("confirm").try { |w| w.as(CrymbleUI::WindowPanel).bring_to_front }
         else
-            @pending_confirm = {"You have unsaved changes - are you sure to #{message}?", block}
-            request_rebuild
+            ask("You have unsaved changes - are you sure to #{message}?", &block)
         end
     end
 end

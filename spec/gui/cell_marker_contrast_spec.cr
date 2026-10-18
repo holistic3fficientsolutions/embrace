@@ -99,8 +99,8 @@ describe "the cut-content marker over embrace's own cell backgrounds" do
         end
       end
 
-      it "is derived from the field-class backgrounds" do
-        %w[fieldlist.agg_bg fieldlist.col_bg fieldlist.row_bg fieldlist.free_bg].each do |key|
+      it "is derived from a live cell's and the field-class backgrounds" do
+        %w[cell.live fieldlist.agg_bg fieldlist.col_bg fieldlist.row_bg fieldlist.free_bg].each do |key|
           assert_marker_derived_from_paint(CrymbleUI::Theme.current[key], key)
         end
       end

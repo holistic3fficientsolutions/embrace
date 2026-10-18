@@ -749,7 +749,8 @@ class Table::Lazy::Pivot::Hierarchic(T,U,V) < Table::Lazy::Raw::Base(T)
                 # are exercised by the Kanban / non-Kanban specs (spec/table/pivot_spec
                 # + vt-pivot_spec).
                 clusters3 = clusters.merge(clusters2) {|k,v1,v2| v1}
-                get_index(clusters3, @row_headers.size+1) # we assume to have @aggregate
+                first = get_index(clusters3, @row_headers.size+1) # the record's first aggregate cell; we assume to have @aggregate
+                record_slot?(index, first) ? index : first
             else # Assignability::Not or Assignability::Drilldown; TODO(pivot): we might change this
                 raise ConditionsNotMet.new("Not defined on this cell type")
             end
@@ -1213,6 +1214,16 @@ class Table::Lazy::Pivot::Hierarchic(T,U,V) < Table::Lazy::Raw::Base(T)
         end
         index
     end
+    # Typing into an empty intersection writes into the cell typed into when, after the insert, that cell is a slot
+    # of the new record: in bounds, in the same Aggregate as the record's first cell, directly assignable. Any other
+    # click (an empty aggregate slot, say) writes into the record's first aggregate cell.
+    private def record_slot?(clicked : Index, first : Index) : Bool
+        return false unless in_bounds?(clicked)
+        record = map_index(first)[2].last[0]
+        record.is_a?(Aggregate) && map_index(clicked)[2].last[0].same?(record) &&
+            get_assignability(clicked) == Assignability::Directly
+    end
+
     private def get_aggregate_offset(index : Index) : Index
         res = [0,0]
         _, _, tables = map_index(index)

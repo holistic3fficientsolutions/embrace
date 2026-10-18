@@ -1,5 +1,5 @@
 name: embrace-crystal
-version: 2.5.2
+version: 2.6.0
 
 authors:
   - Wolfgang Mayerle <wolfgang.mayerle@h3o.de>
@@ -12,6 +12,7 @@ targets:
 crystal: ">= 1.20.0"
 
 license: AGPL-3.0-only
+repository: https://github.com/holistic3fficientsolutions/embrace
 
 dependencies:
   crymble-ui:

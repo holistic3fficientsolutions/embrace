@@ -19,6 +19,9 @@ private WITH_REFERENCE = <<-EOT
 
 private CITY = {"People", "Home", "Cities", "City"}
 
+# Why such an Insert is refused, in the user's words: the City would go into a Cities record that does not exist.
+private NO_RECORD = "Cannot store a value in a record that does not exist (it is reached through a reference)"
+
 # The People Shape showing City through Home, two commits made and one step back: an OLD (closed) commit - the one
 # holding both edits; a write there opens a new commit.
 private def on_an_old_commit : {EmbraceUI, ShapeState}
@@ -35,11 +38,12 @@ private def on_an_old_commit : {EmbraceUI, ShapeState}
 end
 
 describe "an Insert the data refuses, on an old commit" do
-    it "through the Ins key leaves the Shape on its commit, showing it" do
+    it "through the Ins key says why, and leaves the Shape on its commit, showing it" do
         ui, shape = on_an_old_commit
         commit = shape.context.current_commit
         ui.cell_text(shape, 2, "Name").should eq("Ben") # control: the grid shows that commit
         ui.insert_record(shape, 1, CITY)
+        ui.status.should contain(NO_RECORD) # before: silent
         shape.context.current_commit.should eq(commit)
         ui.cell_text(shape, 2, "Name").should eq("Ben") # the grid reads its commit; a rebuild raises nothing
     end
@@ -48,7 +52,7 @@ describe "an Insert the data refuses, on an old commit" do
         ui, shape = on_an_old_commit
         commit = shape.context.current_commit
         ui.context_menu_on(shape, 1, CITY)
-        ui.expect_reported("Cannot assign to a non-existant record") { ui.context_menu :insert_records }
+        ui.expect_reported(NO_RECORD) { ui.context_menu :insert_records }
         shape.context.current_commit.should eq(commit)
         ui.cell_text(shape, 2, "Name").should eq("Ben")
     end
@@ -68,5 +72,16 @@ describe "a record added after a refused Insert" do
         ui.shape_menu(shape, :add_record)
         ui.ui.settle
         shape.matrix_adapter.not_nil!.size[0].should eq(rows + 1)
+    end
+end
+
+# Every keyboard path says why the data refused it, as typing and the context menu do (Wolfgang, 2026-10-17).
+describe "a keyboard shortcut the data refuses" do
+    it "Ctrl+T on a reference cell says why, and changes nothing" do
+        ui, shape = on_an_old_commit
+        home = ui.cell_text(shape, 1, "Home")
+        ui.press_on_cell(shape, 1, "Home", "Ctrl+T")
+        ui.status.should contain("Can only assign Reference to Reference") # before: silent
+        ui.cell_text(shape, 1, "Home").should eq(home)
     end
 end

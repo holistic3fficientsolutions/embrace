@@ -19,6 +19,7 @@ module Interface::GUI::VHTreeAdapter
     abstract def is_expandable? : Bool
     abstract def toggle_select : Nil
     abstract def toggle_expand : Nil
+    abstract def add_field(name : String, refers_to : ::Persistency::FieldLID?) : Nil # a table node: a new field in it, selected
     abstract def drag : Bool # true, if draggable
     abstract def is_moveable?(from : Interface::GUI::VHTreeAdapter) : Bool
     abstract def move(from : Interface::GUI::VHTreeAdapter) : Nil

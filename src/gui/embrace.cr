@@ -41,6 +41,8 @@ class EmbraceApp < CrymbleUI::App
     include FieldlistGrid
 
     @filename : String? = nil
+    # Where the next file dialog starts: the folder of the file last picked in one (file_browser).
+    @file_folder = "."
     @persistency = Persistency::Default.new
     @last_save_version = 0
 
@@ -83,9 +85,6 @@ class EmbraceApp < CrymbleUI::App
 
     # Background color (dark theme default; toggled by @dark_theme)
     @bg_color : CrymbleUI::Color = CrymbleUI::Color.new(0, 0, 0, 255)
-
-    # Dialog state - pending confirm dialog
-    @pending_confirm : {String, Proc(Nil)}? = nil
 
     # About dialog
     @show_about : Bool = false
@@ -201,9 +200,16 @@ class EmbraceApp < CrymbleUI::App
     # framework's event loop calls rebuild at the proper time.
 
 
+    # The window names the document, with a "*" in front while it has changes not saved:
+    # "*book.embrace - H3O Embrace®". The same unsaved test as protect_unsaved_changes; "untitled" as the recovery copy.
+    private def window_title : String
+        name = @filename.try { |f| File.basename(f) } || "untitled"
+        "#{"*" unless @last_save_version == @persistency.version}#{name} - H3O Embrace®"
+    end
+
     def build : CrymbleUI::Widget
         @build_count += 1 # test instrument (rebuild cost audit)
-        window("H3O Embrace®", 1200, 900) do
+        window(window_title, 1200, 900) do
             on_closed { do_quit }
 
             menubar do
@@ -277,14 +283,11 @@ class EmbraceApp < CrymbleUI::App
                             text("")
                             text("Using:")
                             text("CrymbleUI (version #{CrymbleUI::VERSION}, MIT license)")
-                            text("CSFML (version #{SF::VERSION}, Zlib license)")
-                            text("SFML (version #{SF::SFML_VERSION}, Zlib license)")
-                            # ASKED, not hardcoded. crymbleui ships the font (embedded into our
-                            # binary by its own compile-time read_file), so crymbleui owns what must
-                            # be said about it — this line used to claim "version 1.21, Apache 2.0"
-                            # and went stale the day that font gained a DejaVu glyph under the
-                            # Bitstream Vera licence, which we would never have noticed from here.
-                            CrymbleUI::SFMLRenderer::FONT_ATTRIBUTION.each { |line| text(line) }
+                            # ASKED, not hardcoded: crymbleui knows what it was built with - SFML on the
+                            # desktop, a canvas in the browser - and the font it embeds, so it owns what
+                            # must be said about them (a hardcoded font line once went stale the day the
+                            # font gained a DejaVu glyph under the Bitstream Vera licence).
+                            CrymbleUI.backend_notices.each { |line| text(line) }
                             text("crexcel (version #{Crexcel::VERSION}, MIT license)")
                             text("xlsx-parser (version #{XlsxParser::VERSION}, MIT license)")
                             text("")
@@ -292,28 +295,6 @@ class EmbraceApp < CrymbleUI::App
                         end
                     end
                 end
-            end
-
-            # Confirm dialog panel
-            if confirm = @pending_confirm
-                msg, action = confirm
-                wp = window_panel(msg, x: 300.0, y: 250.0, width: 500.0, height: 100.0, id: "confirm") do
-                    register_shortcut("Enter") { @pending_confirm = nil; action.call; request_rebuild }
-                    register_shortcut("Escape") { @pending_confirm = nil; request_rebuild }
-                    hstack(spacing: 10.0, padding: 10.0) do
-                        button("Ok", id: "confirm_ok") do
-                            @pending_confirm = nil
-                            action.call
-                            request_rebuild
-                        end
-                        button("Cancel", id: "confirm_cancel") do
-                            @pending_confirm = nil
-                            request_rebuild
-                        end
-                    end
-                end
-                wp.title_bar_color = CrymbleUI::Theme.current["panel.title_bar_warning"]
-                wp.background_color = CrymbleUI::Theme.current["panel.background_warning"]
             end
 
             # Render all active dialogs
@@ -399,35 +380,77 @@ class EmbraceApp < CrymbleUI::App
         yield adapter, vm, vm.cursor_rc
     end
 
-    # Run a cursor cell mutation, swallowing the data layer's "can't do that
-    # here" (ConditionsNotMet — header / aggregate / incompatible value type) so
-    # a keyboard shortcut on an unsuitable cell no-ops; always reconcile +
-    # repaint after (mirrors the rescue used by ShapeState's cell bridges).
+    # Ctrl+.: today's date, "YYYYMMDD ", typed into the Shape's grid as if typed - at the caret while a cell is
+    # edited, starting an edit on the cursor's cell - through crymbleui's one text path (FocusManager#type_text,
+    # traced, ending at the input barrier: on a drill-down cell it drills once). Only while the keyboard is in that
+    # grid (the grid, or a cell editor inside it); the Shape's other fields - and a reference cell's open list,
+    # an overlay - take none.
+    private def type_date(shape : ShapeState) : Nil
+        with_cell_cursor(shape) do |_adapter, vm, _rc|
+            keyboard = CrymbleUI::Widget.focus_manager
+            holder = keyboard.focused_widget
+            while holder && !holder.same?(vm)
+                holder = holder.parent
+            end
+            keyboard.type_text(Time.local.to_s("%Y%m%d "), self) if holder
+        end
+    end
+
+    # Run a cursor cell mutation (a keyboard shortcut: Ins, Del, Ctrl+V, Ctrl+U, Ctrl+T). The data layer's "can't
+    # do that here" (ConditionsNotMet) says why in the status bar - as typing, a pick, a drag and the context menu
+    # do; always reconcile + repaint after.
     private def cell_op(shape : ShapeState)
         yield
-    rescue ConditionsNotMet
-        # cursor cell can't take this op — no-op
+    rescue ex : ConditionsNotMet
+        set_statusbar_warning(ex.message || "")
     ensure
         shape.update(true)
         request_rebuild
+    end
+
+    # A Shape panel's size. Tests shrink it via env var so small-viewport regression scenarios (e.g. Amanita rank
+    # blank when the matrix overflows) reproduce without manual resizing.
+    private def shape_panel_size : {Float64, Float64}
+        {ENV["EMBRACE_SHAPE_PANEL_WIDTH"]?.try(&.to_f) || 1100.0, ENV["EMBRACE_SHAPE_PANEL_HEIGHT"]?.try(&.to_f) || 750.0}
+    end
+
+    # A new Shape opens one step (20 px right and down) past the newest open Shape, as far as the window has room:
+    # an axis without room keeps its first place, and past the room the steps start over at the first - hiding the
+    # Shape there and leaving the next ones a strip at their right end (for one or two only their close X); Ctrl+Tab
+    # reaches them. The newest's step is clamped to the room there
+    # is now, so a window resized between two openings does not put the next on it (unless the room changed axis).
+    # Counted when the Shape opens - in the live window, or at the app's first build in the window being built - a
+    # later resize does not re-cascade (crymbleui keeps each panel inside the window).
+    private def place_shape(shape : ShapeState) : Nil
+        area = (root || current_window.not_nil!).as(CrymbleUI::Window).panel_area_bounds
+        width, height = shape_panel_size
+        across = cascade_steps(area.right - width - 20.0)
+        down = cascade_steps(area.bottom - height - 40.0)
+        n = {across, down}.select(&.> 1).min? || 1
+        newest = @shapes.select(&.placed?).max_by?(&.slot)
+        step = newest ? (Math.min(newest.cascade.not_nil![:step], n - 1) + 1) % n : 0
+        origin = {x: across > 1 ? 20.0 + 20.0 * step : 20.0, y: down > 1 ? 40.0 + 20.0 * step : 40.0}
+        shape.open_at(newest ? newest.slot + 1 : 0, step, origin)
+    end
+
+    # The places a 20 px step has in `room` - the first included, so at least one.
+    private def cascade_steps(room : Float64) : Int32
+        Math.max(1, (room / 20.0).floor.to_i + 1)
     end
 
     private def build_shape_panel(shape : ShapeState) : Nil
         shape.update
         shape.matrix_adapter.try do |a|
             a.on_data_changed = ->(structural : Bool) { request_rebuild(blocks_input: structural); nil }
+            a.on_refused = ->(message : String) { set_statusbar_warning(message); nil }
             a.on_cell_edit = ->(row : Int32, col : Int32) { cell_edit_started(shape, {row, col}); nil }
         end
-        idx = @shapes.index(shape) || 0
-        step = 20.0
-        cascade_x = step + step * (idx % 10) + 2 * step * (idx // 10)
-        cascade_y = 2 * step + step * (idx % 10)
-        # Allow tests to shrink the Shape panel via env var so small-viewport
-        # regression scenarios (e.g. Amanita rank blank when matrix overflows)
-        # can be reproduced without manual resizing.
-        panel_width = (ENV["EMBRACE_SHAPE_PANEL_WIDTH"]?.try(&.to_f) || 1100.0)
-        panel_height = (ENV["EMBRACE_SHAPE_PANEL_HEIGHT"]?.try(&.to_f) || 750.0)
-        window_panel(shape.display_title, x: cascade_x, y: cascade_y, width: panel_width, height: panel_height, id: shape.id) do
+        place_shape(shape) unless shape.placed?
+        panel_width, panel_height = shape_panel_size
+        # The keyboard's home in a Shape is its grid (its table picker while it has none): where the keyboard lands
+        # when the Shape opens, or is entered with no memory of a widget there.
+        home = shape.matrix_adapter ? "matrix_grid_#{shape.id}" : "tablepick_#{shape.id}"
+        window_panel(shape.display_title, **shape.cascade.not_nil![:origin], width: panel_width, height: panel_height, id: shape.id, home_focus: home) do
             on_closed { close_shape(shape) }
             register_shortcut("Alt+Left") { shape.navigate_history(-1); request_rebuild }
             register_shortcut("Alt+Right") { shape.navigate_history(1); request_rebuild }
@@ -458,6 +481,7 @@ class EmbraceApp < CrymbleUI::App
             register_shortcut("Ctrl+T") do
                 with_cell_cursor(shape) { |adapter, _vm, rc| cell_op(shape) { adapter.cell_assign(rc, true) } }
             end
+            register_shortcut("Ctrl+.") { type_date(shape) }
 
             # Shape menubar
             menubar do
@@ -759,9 +783,9 @@ class EmbraceApp < CrymbleUI::App
                     request_rebuild
                 end
                 cb.on_right_click_handler = ->(pos : CrymbleUI::Vec2) {
-                    if tlid = picker.lid
+                    if (tlid = picker.lid) && (root = shape.vhtree_adapter)
                         table_name = picker.names[picker.lid_index]? || "?"
-                        show_table_context_menu(shape, nil, tlid, table_name, pos)
+                        show_table_context_menu(shape, root, tlid, table_name, pos)
                     end
                     nil
                 }

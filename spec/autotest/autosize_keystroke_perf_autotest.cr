@@ -238,7 +238,7 @@ class Driver
             log "  !! VOID RUN: typing changed nothing, so these numbers measure an idle app."
           end
           # `exit`, NOT handle_close_request. The close request is the USER's gesture, and embrace
-          # answers it with "You have unsaved changes - are you sure to quit?" — a modal nothing in
+          # answers it with "You have unsaved changes - are you sure to quit?" — a question nothing in
           # a harness will ever answer, so the app hangs until the timeout kills it and leaves a
           # dialog sitting on the real desktop. A harness must never ask the app a question it
           # cannot answer. The cost is that CRYMBLE_WORKLOG is not flushed on this path; window the

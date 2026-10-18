@@ -101,9 +101,9 @@ class EmbraceUI
     end
 
     DIALOG_KINDS = {load: "dirbrowser_", save_as: "dirbrowser_", rename: "renamer_", create: "creator_",
-                    import: "importtable_", add_field: "addfield_", decide: "decider_"}
+                    import: "importtable_", add_field: "addfield_", factor_out: "factorout_"}
 
-    # The one open dialog of this kind - load, save_as, rename, create, import, add_field, decide.
+    # The one open dialog of this kind - load, save_as, rename, create, import, add_field, factor_out.
     def dialog(kind : Symbol, & : Dialog ->) : Nil
         prefix = DIALOG_KINDS[kind]? || raise ArgumentError.new("no dialog kind :#{kind}; kinds: #{DIALOG_KINDS.keys.join(", ")}")
         widget = begin
@@ -116,6 +116,9 @@ class EmbraceUI
 
     # A dialog's parts by name: d.type(:name, "x"), d.click(:ok), d.press(:name, "Enter"), d.open_file("sub/x.embrace").
     class Dialog
+        # The dialog's panel id
+        getter id : String
+
         def initialize(@ui : CrymbleUI::Testing::Driver, @id : String)
         end
 
@@ -147,6 +150,108 @@ class EmbraceUI
         def open_file(path : String) : Nil
             @ui.open_file("#{@id}_files", path)
         end
+    end
+
+    # === Questions - an Ok / Cancel panel: delete, overwrite, unsaved changes ===
+
+    # The open questions' titles, front first.
+    def questions : Array(String)
+        question_panels.map(&.title)
+    end
+
+    # The one open question whose title contains `text` (raises on none or several).
+    def question(text : String) : CrymbleUI::WindowPanel
+        found = question_panels.select(&.title.includes?(text))
+        return found.first if found.size == 1
+        raise ArgumentError.new("#{found.empty? ? "no" : found.size} question(s) with \"#{text}\"; open: #{questions.inspect}")
+    end
+
+    # Answer that question as a user does: brought forward first, then its button.
+    def answer(text : String, button : Symbol) : Nil
+        bring_forward(text)
+        @ui.click(question_button(text, button))
+    end
+
+    # Bring that question to the front as a user can: by its title bar, or - all of it covered (a question asked
+    # from a Shape is behind it once the Shape is used again) - by Ctrl+Tab. Raises when neither reaches it.
+    def bring_forward(text : String) : Nil
+        id = question(text).id.not_nil!
+        begin
+            @ui.press_title(id)
+        rescue ArgumentError
+            @app.root.not_nil!.find_all_panels.size.times do
+                break if @app.root.not_nil!.find_topmost_panel.try(&.id) == id
+                @ui.press("Ctrl+Tab")
+            end
+        end
+        front = @app.root.not_nil!.find_topmost_panel.try(&.id)
+        raise ArgumentError.new("could not bring the question \"#{text}\" forward (front: #{front})") unless front == id
+    end
+
+    # A question's :ok / :cancel button id - to compare with focused_id.
+    def question_button(text : String, button : Symbol) : String
+        label = {ok: "Ok", cancel: "Cancel"}[button]? || raise ArgumentError.new("a question has :ok and :cancel, not :#{button}")
+        question(text).find_all { |w| w.is_a?(CrymbleUI::Button) && w.label == label }.first.id.not_nil!
+    end
+
+    private def question_panels : Array(CrymbleUI::WindowPanel)
+        @app.root.not_nil!.find_all_panels
+            .reject(&.closed)
+            .select { |panel| %w(Ok Cancel).all? { |label| panel.find_all { |w| w.is_a?(CrymbleUI::Button) && w.label == label }.size == 1 } }
+            .select { |panel| panel.find_all { |w| w.focusable? && !w.is_a?(CrymbleUI::Button) }.empty? } # buttons only
+            .sort_by { |panel| -panel.z_index }
+    end
+
+    # Ask to delete a field / a table, from the Shape's configurator - the question stays open.
+    def ask_delete_field(shape : ShapeState, *path : Segment) : Nil
+        right_click configurator_field(shape, *path)
+        context_menu :delete_field
+    end
+
+    def ask_delete_table(shape : ShapeState, table : String) : Nil
+        right_click configurator_table(shape, table)
+        context_menu :delete_table
+    end
+
+    # A new Factor out dialog on the field, its target picked: table, then field (both combos filter as typed).
+    def factor_out(shape : ShapeState, table : String, field : String, to_table : String, to_field : String) : Dialog
+        before = panel_ids.select(&.starts_with?("factorout_"))
+        right_click configurator_field(shape, table, field)
+        context_menu :factor_out
+        id = panel_ids.find { |i| i.starts_with?("factorout_") && !before.includes?(i) }
+        dialog = Dialog.new(@ui, id || raise ArgumentError.new("no new Factor out dialog opened"))
+        dialog.type :table, to_table
+        @ui.press("Enter")
+        dialog.type :field, to_field
+        @ui.press("Enter")
+        raise ArgumentError.new("Factor out has no target picked") unless @ui.enabled?(dialog.part(:ok)) # precondition
+        dialog
+    end
+
+    # === Panels - where they lie and which is in front ===
+
+    # An open panel by id (a dialog's, a question's, a Shape's).
+    def panel(id : String) : CrymbleUI::WindowPanel
+        @app.root.not_nil!.find_all_panels.find { |p| p.id == id && !p.closed } ||
+            raise ArgumentError.new("no open panel \"#{id}\"; open: #{panel_ids.inspect}")
+    end
+
+    # The panel in front.
+    def front : String?
+        @app.root.not_nil!.find_topmost_panel.try(&.id)
+    end
+
+    # `older` is reached by its title bar while `newer` is open in front of it: pressed there, it comes to the front,
+    # and `newer` stays open.
+    def reachable_under(older : String, newer : String) : Nil
+        raise ArgumentError.new("precondition: \"#{newer}\" in front, not \"#{front}\"") unless front == newer
+        @ui.press_title older
+        raise ArgumentError.new("\"#{older}\" pressed by its title bar, but \"#{front}\" is in front") unless front == older
+        panel(newer)
+    end
+
+    private def panel_ids : Array(String)
+        @app.root.not_nil!.find_all_panels.reject(&.closed).compact_map(&.id)
     end
 
     # === The configurator (by name path) ===
@@ -392,6 +497,29 @@ class EmbraceUI
         @ui.cell_text(grid(shape), r, c)
     end
 
+    # A pivot cell named by its row headers and its column's field - for aggregate columns, which carry no header
+    # when no field is on the column axis. An empty intersection has no Rank header yet - one row header fewer:
+    #     ui.pivot_text(shape, ["b1", "Bob"], field: "feedback")       # empty; a record typed there: ["b1", "Bob", "4"]
+    def pivot_text(shape : ShapeState, rows : Array(String), *, field : String | Tuple) : String
+        r, c = pivot_cell(shape, rows, field)
+        @ui.cell_text(grid(shape), r, c)
+    end
+
+    # Click that pivot cell, as the mouse does - the grid's cursor and the keyboard land there.
+    def click_pivot_cell(shape : ShapeState, rows : Array(String), field : String | Tuple) : Nil
+        r, c = pivot_cell(shape, rows, field)
+        @ui.click_cell(grid(shape), r, c)
+    end
+
+    # Type into that pivot cell as a user does: a real click on it, the keys to whatever then holds the keyboard
+    # (never focused by the harness), and Enter.
+    def type_into_pivot_cell(shape : ShapeState, rows : Array(String), field : String | Tuple, text : String) : Nil
+        r, c = pivot_cell(shape, rows, field)
+        @ui.click_cell(grid(shape), r, c)
+        @ui.type(text)
+        @ui.press("Enter")
+    end
+
     # Where the grid's cursor is: {Rank, field} in the detail layout, else a PivotCell. Read it before
     # a cell's text - reading one brings that cell into view, cursor and all.
     # In the detail layout it names fields of the Shape's own table, the form cell_text takes back.
@@ -464,7 +592,8 @@ class EmbraceUI
         Inward.new(label, shape.persistency.with_context(shape.context) { shape.persistency.display_name(via) })
     end
 
-    private def grid(shape : ShapeState) : String
+    # The id of the Shape's grid - to compare with focused_id
+    def grid(shape : ShapeState) : String
         "matrix_grid_#{shape.id}"
     end
 
@@ -505,6 +634,18 @@ class EmbraceUI
     private def columns(shape : ShapeState) : Array(String?)
         rows, cols = shape.matrix_adapter.not_nil!.size
         (0...cols).map { |c| (0...rows).each.compact_map { |r| shape.cell_key(r, c) }.first? }
+    end
+
+    # The data cell on these row headers in the field's column; raises listing what the grid shows.
+    private def pivot_cell(shape : ShapeState, rows : Array(String), field : String | Tuple) : {Int32, Int32}
+        raise ArgumentError.new("Shape '#{table_of(shape)}' is in the detail layout; name a cell by Rank and field") if shape.detail_layout?
+        want = field.is_a?(String) ? key(shape, {table_of(shape).not_nil!, field}) : key(shape, field)
+        keys = columns(shape)
+        cells = pivot_view(shape).cells
+        name = "rows: #{rows}, field: #{field}"
+        one(shape, cells.select { |(_, c), n| n.rows == rows && keys[c]? == want }, "cell", name, "Cells") do
+            cells.map { |(_, c), n| "rows: #{n.rows}, column #{keys[c]?}" }.uniq
+        end[0]
     end
 
     # The data cell a PivotCell names; raises listing the names the grid shows.

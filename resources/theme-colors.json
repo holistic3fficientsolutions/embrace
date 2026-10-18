@@ -1,6 +1,7 @@
 {
   "dark": {
     "cell.empty": "#242424",
+    "cell.live": "#363636",
     "constraint.nok": "#502828",
     "constraint.ok": "#285028",
     "fieldlist.agg_bg": "#402E1E",
@@ -21,6 +22,7 @@
   },
   "light": {
     "cell.empty": "#E4E4E4",
+    "cell.live": "#F8F8F8",
     "constraint.nok": "#E8A0A0",
     "constraint.ok": "#90D890",
     "fieldlist.agg_bg": "#FFE0C0",

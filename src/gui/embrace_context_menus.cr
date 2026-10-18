@@ -41,8 +41,8 @@ class EmbraceApp < CrymbleUI::App
                 display = adapter.get_display_texts[1]? || "?"
                 if adapter.is_table? && (tlid = adapter.table_lid)
                     show_table_context_menu(captured_shape, adapter, tlid, display, pos)
-                elsif !adapter.is_pseudo_field? && (flid = adapter.field_lid) && (tlid = adapter.table_lid)
-                    show_field_context_menu(captured_shape, adapter, flid, tlid, display, pos)
+                elsif !adapter.is_pseudo_field? && (flid = adapter.field_lid)
+                    show_field_context_menu(captured_shape, adapter, flid, display, pos)
                 end
             end
             nil
@@ -51,7 +51,7 @@ class EmbraceApp < CrymbleUI::App
 
     # === Context Menu Helpers ===
 
-    private def show_table_context_menu(shape : ShapeState, node : Interface::GUI::VHTreeAdapter?, table_lid : TableLID, table_name : String, pos : CrymbleUI::Vec2 = CrymbleUI::Vec2.new(300.0, 300.0)) : Nil
+    private def show_table_context_menu(shape : ShapeState, node : Interface::GUI::VHTreeAdapter, table_lid : TableLID, table_name : String, pos : CrymbleUI::Vec2 = CrymbleUI::Vec2.new(300.0, 300.0)) : Nil
         items = [
             CtxItem.new("rename_table", "Rename table '#{table_name}'...", nil, true, ->() {
                 # Prefill = the RAW stored name (an un-named table prefills an EMPTY box, not the
@@ -67,14 +67,33 @@ class EmbraceApp < CrymbleUI::App
                 add_dialog(dialog)
             }),
             CtxItem.new("delete_table", "Delete table '#{table_name}'", nil, true, ->() {
-                @pending_confirm = {"Are you sure to delete table '#{table_name}'?", ->() {
+                ask("Delete table '#{table_name}'?") do
+                    next unless still_there?(shape, "Table '#{table_name}'", "nothing was deleted") {
+                        shape.persistency.get_record_lids(MetaFieldLIDs::TableLastTable).includes?(table_lid)
+                    }
                     shape.persistency.with_context(shape.context) do
                         shape.persistency.remove_table(table_lid)
                     end
                     shape.update(true)
                     request_rebuild
-                }}
-                request_rebuild
+                end
+            }),
+            # The configurator is where a field is acted on, so it can be added there too - the same dialog as the
+            # Perspective's "...". The dialog is not modal: its table is looked up again (its row's key, and the same
+            # table there) on Ok, and a Shape that no longer shows it - closed, or switched to another table - adds nothing.
+            CtxItem.new("add_field", "Add field to '#{table_name}'...", nil, true, ->() {
+                key = node.key
+                dialog = Dialogs::AddField.new("Add new field to '#{table_name}'", shape.persistency, shape.context) do |name, ref_field_lid|
+                    # The key is the row's path from the Shape's table - empty for that table itself, whichever it is.
+                    if @shapes.includes?(shape) && (table_node = shape.configurator_node(key)) && table_node.table_lid == table_lid
+                        table_node.add_field(name, ref_field_lid)
+                        shape.update(true)
+                    else
+                        set_statusbar_warning("'#{table_name}' is no longer in that Shape - no field was added")
+                    end
+                    request_rebuild
+                end
+                add_dialog(dialog)
             }),
             CtxItem.new("associate_fields", "Associate / dissociate fields...", nil, true, ->() {
                 if configurator = shape.configurator_ref
@@ -87,8 +106,12 @@ class EmbraceApp < CrymbleUI::App
         request_rebuild
     end
 
-    private def show_field_context_menu(shape : ShapeState, node : Interface::GUI::VHTreeAdapter, field_lid : FieldLID, table_lid : TableLID, field_name : String, pos : CrymbleUI::Vec2 = CrymbleUI::Vec2.new(300.0, 300.0)) : Nil
+    private def show_field_context_menu(shape : ShapeState, node : Interface::GUI::VHTreeAdapter, field_lid : FieldLID, field_name : String, pos : CrymbleUI::Vec2 = CrymbleUI::Vec2.new(300.0, 300.0)) : Nil
         is_reference = !shape.persistency.get_outward_reference(field_lid).nil?
+        # The field's own table: a field row's value is the field, and its table_lid cannot tell (TableLID and FieldLID are
+        # both Int64) - it would hand back the field.
+        table_lid = shape.persistency.with_context(shape.context) { shape.persistency.get_table_lid(field_lid).not_nil! }
+        table_name = shape.persistency.with_context(shape.context) { shape.persistency.display_name(table_lid) }
         items = [
             CtxItem.new("rename_field", "Rename field '#{field_name}'...", nil, true, ->() {
                 # Prefill = the RAW stored name (see the table renamer above).
@@ -103,20 +126,26 @@ class EmbraceApp < CrymbleUI::App
                 add_dialog(dialog)
             }),
             CtxItem.new("delete_field", "Delete field '#{field_name}'", nil, true, ->() {
-                @pending_confirm = {"Are you sure to delete field '#{field_name}'?", ->() {
+                ask("Delete field '#{field_name}' of '#{table_name}'?") do
+                    what = "Field '#{field_name}' of '#{table_name}'"
+                    next unless still_there?(shape, what, "nothing was deleted") { !shape.persistency.get_table_lid(field_lid).nil? }
                     shape.persistency.with_context(shape.context) do
-                        tlid = shape.persistency.get_table_lid(field_lid).not_nil!
-                        shape.persistency.remove_field(tlid, field_lid)
+                        shape.persistency.remove_field(shape.persistency.get_table_lid(field_lid).not_nil!, field_lid) # just checked
                     end
                     shape.update(true)
                     request_rebuild
-                }}
-                request_rebuild
+                end
             }),
             CtxItem.new("factor_out", "Factor out reference / link...", nil, !is_reference, ->() {
                 dialog = Dialogs::FactorOut.new("Factoring out / linking '#{field_name}'", shape.persistency, shape.context, field_lid) do |target_table_lid, target_field_lid|
-                    tlid = shape.persistency.get_table_lid(field_lid).not_nil!
-                    ambiguous = shape.persistency.factor_out_reference(tlid, field_lid, target_table_lid, target_field_lid)
+                    # The dialog waits, so its field may have gone or been factored out since. Its target cannot: a
+                    # target deleted or made a reference meanwhile drops out of the dialog's pickers, and Ok is disabled.
+                    what = "Field '#{field_name}' of '#{table_name}'"
+                    next unless still_there?(shape, what, "nothing was factored out") { shape.persistency.get_table_lid(field_lid) == table_lid }
+                    next unless still_there?(shape, what, "nothing was factored out", gone: "is a reference now") {
+                        shape.persistency.get_outward_reference(field_lid).nil?
+                    }
+                    ambiguous = shape.persistency.factor_out_reference(table_lid, field_lid, target_table_lid, target_field_lid)
                     if ambiguous
                         set_statusbar_info("Attention: referenced cells not always unique")
                     end

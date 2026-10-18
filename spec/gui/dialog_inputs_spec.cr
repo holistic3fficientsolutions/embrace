@@ -168,11 +168,12 @@ describe "a dialog's text field" do
         end
     end
 
-    # Dialogs are not modal: a click on a Shape panel brings it to the front and can leave the keyboard in the
-    # dialog's field. Escape then reaches the field, not the dialog window's shortcut - and still closes it.
+    # Dialogs are not modal: a press on the Shape's title bar brings the Shape to the front and takes the keyboard
+    # there. The dialog then lies wholly behind it (a Shape is 1100 x 750); Ctrl+Tab brings it back - the keyboard
+    # back in its field, where it was - and Escape there closes it.
     {create: {"addtable_", :name}, rename: {nil, :name}, add_field: {"mx_addf_dlg_", :name},
      import: {"mi_import_xlsx_", :file}, import_table: {"mi_import_xlsx_", :table}}.each do |kind, (opener, part)|
-        it "#{kind}: Escape in its field closes it while another panel is in front" do
+        it "#{kind}: raised behind the Shape and back, the keyboard is in its field again, and Escape closes it" do
             ui = EmbraceUI.tables(PEOPLE)
             shape = ui.shape("People")
             if opener
@@ -184,8 +185,10 @@ describe "a dialog's text field" do
             dialog_kind = kind == :import_table ? :import : kind
             ui.dialog(dialog_kind) do |d|
                 d.type part, "x" # the keyboard is in the field
-                ui.ui.find(shape.id).as(CrymbleUI::WindowPanel).bring_to_front
-                ui.ui.focused_id.should eq(d.part(part)) # control: still there, with the Shape panel in front
+                ui.ui.press_title shape.id
+                CrymbleUI::Widget.focus_manager.focused_widget.try(&.find_panel).try(&.id).should eq(shape.id)
+                ui.ui.press "Ctrl+Tab"
+                ui.ui.focused_id.should eq(d.part(part))
                 ui.ui.press("Escape")
             end
             expect_raises(ArgumentError, /no single :#{dialog_kind} dialog/) { ui.dialog(dialog_kind) { } }

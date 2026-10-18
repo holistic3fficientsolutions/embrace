@@ -88,10 +88,10 @@ class FieldlistSpacer < CrymbleUI::Widget
     end
 end
 
-# Shared field-class palette. The field list *and* the perspective matrix
-# headers tint by pivot class (row = green, column = blue, aggregate = orange,
-# unused = grey) so both views speak the same visual language. Single source of
-# truth for the tokens and the per-level brightening.
+# Shared field-class palette. The field list tints by pivot class (row = green,
+# column = blue, aggregate = orange, unused = grey); the perspective's headers by
+# row / column alike, its values not at all (cell.live). Single source of truth
+# for the tokens and the per-level brightening.
 module GUI::FieldClassColors
     extend self
 

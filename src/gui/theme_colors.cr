@@ -5,7 +5,7 @@ require "crymble-ui"
 #
 # crymbleui's theme JSON stays generic; embrace names + values its OWN tokens
 # (constraint.*, fieldlist.*, vhtree.*, statusbar.info/warning, panel.*_warning,
-# cell.empty) and registers them into the library's
+# cell.empty, cell.live) and registers them into the library's
 # themes via `CrymbleUI::Theme.register_colors`. So the values live here, in
 # embrace, not in the lib — and `Theme.current["constraint.ok"]` resolves exactly
 # as before. Registered once at load (below), before any widget reads a color.

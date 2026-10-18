@@ -92,6 +92,21 @@ MSVC "x64 Native Tools" shell, after `shards install --skip-postinstall`,
 embedded (via a standard `.rc` resource — no third-party post-processing).
 A polished Windows build guide is in progress.
 
+**In a browser.** The same source also builds into a static web page: Embrace compiled to WebAssembly, running
+entirely in the visitor's browser tab (files saved there stay in the tab). crymble-ui provides the backend and the
+build tool - its README, section "In a browser", lists what the toolchain needs. After `shards install`:
+
+```sh
+lib/crymble-ui/bin/crymble-web setup          # once: the WebAssembly toolchain (a few minutes, ~1 GB)
+web/build.sh --local                          # bin/web/embrace/, marked "local build - not for publication"
+lib/crymble-ui/bin/crymble-web serve embrace  # try it: http://127.0.0.1:8765/
+```
+
+`web/build.sh` without `--local` builds a page to publish, and only from a public release: HEAD must be the release
+tag `v<version>` and crymble-ui on its own release tag, both published and without changes - the page links exactly
+those as its source (AGPL). Deploy by copying `bin/web/embrace/` to any static web server. `web/smoke.mjs` (the page
+in headless Chromium) and `web/spec-wasm.sh` (the non-GUI specs in the web build) check it.
+
 ## License
 
 Embrace is free software, licensed under the

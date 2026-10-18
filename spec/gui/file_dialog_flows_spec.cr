@@ -27,9 +27,9 @@ describe "the file dialogs, from the File menu" do
             ui.menu(:file_load)
             load = ui.ui.only("dirbrowser_").id.not_nil!
             ui.dialog(:load) { |d| d.open_file(path) }
-            ui.ui.present?("confirm").should be_true # asked first
-            ui.app.shapes.first.should be(shape)     # nothing replaced yet
-            ui.ui.click("confirm_ok")
+            ui.question("unsaved") # asked first
+            ui.app.shapes.first.should be(shape) # nothing replaced yet
+            ui.answer("unsaved", :ok)
             ui.status.should contain("Loaded")
             ui.app.shapes.first.should_not be(shape)
             ui.ui.present?(load).should be_false # the dialog is gone
@@ -56,14 +56,13 @@ describe "the file dialogs, from the File menu" do
             end
             File.exists?(File.join(dir, "fresh.embrace")).should be_true
             ui.menu(:file_save_as)
-            ui.dialog(:save_as) do |d|
-                d.open_file(dir) # into the folder: two clicks on each part
+            ui.dialog(:save_as) do |d| # starts in dir: the folder of the file last picked
                 d.fill(:filename, "a") # a.embrace is on disk, "one"
                 d.click(:ok)
             end
-            ui.ui.present?("confirm").should be_true
+            ui.question("already exists")
             File.read(File.join(dir, "a.embrace")).should eq("one")
-            ui.ui.click("confirm_ok")
+            ui.answer("already exists", :ok)
             File.read(File.join(dir, "a.embrace")).should_not eq("one")
         end
     end
