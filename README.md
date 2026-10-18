@@ -9,6 +9,9 @@
 **A sovereign, local-first tool for structured data — lighter than a
 spreadsheet, more powerful than a database, with built-in time travel.**
 
+**[Try it in your browser](https://h3o.de/demo)** — the real app, compiled to WebAssembly: nothing to install,
+nothing uploaded. Or [download it](#download) for Windows and Linux.
+
 Embrace fills a gap that, as of mid-2026, no mainstream office or open-source
 suite covers: the structured-data niche occupied so far mostly by proprietary
 tools such as Airtable, Microsoft Access or Microsoft Lists (and similar). It
@@ -104,7 +107,8 @@ lib/crymble-ui/bin/crymble-web serve embrace  # try it: http://127.0.0.1:8765/
 
 `web/build.sh` without `--local` builds a page to publish, and only from a public release: HEAD must be the release
 tag `v<version>` and crymble-ui on its own release tag, both published and without changes - the page links exactly
-those as its source (AGPL). Deploy by copying `bin/web/embrace/` to any static web server. `web/smoke.mjs` (the page
+those as its source (AGPL). Deploy by copying `bin/web/embrace/` to any static web server - h3o.de serves the
+latest release's at [h3o.de/demo](https://h3o.de/demo), from `public/demo/embrace/` of the site's repository. `web/smoke.mjs` (the page
 in headless Chromium) and `web/spec-wasm.sh` (the non-GUI specs in the web build) check it.
 
 ## License

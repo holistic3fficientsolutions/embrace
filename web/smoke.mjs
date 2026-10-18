@@ -3,6 +3,7 @@
 // smoke, kept short); what a step changed is read from the saved file where it can be - the domain, not the pixels.
 // Any stderr line, page error or failed check fails the run.
 // usage: node web/smoke.mjs [bin/web/embrace]
+import { readFileSync } from 'node:fs';
 import { serve, launch, open } from '../lib/crymble-ui/tools/wasm/browser.mjs';
 
 const dir = process.argv[2] || 'bin/web/embrace';
@@ -65,7 +66,10 @@ async function saveAs(typed) {
 
 // --- boots, says what it is --------------------------------------------------------------------------------------
 const bar = await page.textContent('header');
-check('boots; the bar names the version and the local build', /Embrace® \d+\.\d+\.\d+/.test(bar) && bar.includes('local build'));
+// web/build.sh --local marks its page and its NOTICES alike; a build to publish carries neither mark
+const local = readFileSync(`${dir}/NOTICES`, 'utf8').includes('not for publication');
+check(`boots; the bar names the version${local ? ' and the local build' : ', no local-build mark'}`,
+  /Embrace® \d+\.\d+\.\d+/.test(bar) && bar.includes('local build') === local);
 check('leaving is not guarded before any input', (await leaveGuarded()) === false);
 check('a release build: no CPU monitor in the top-right corner', (await ink(1150, 28, 120, 22)) === 0);
 
